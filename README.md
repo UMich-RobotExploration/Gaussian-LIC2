@@ -16,6 +16,44 @@
   </p>
 </p>
 
+## Quick Start: Docker + GUI
+
+For recordings from the Ouster + camera payload (ROS 2 bags). Needs Ubuntu with an NVIDIA RTX 50xx GPU (12 GB or more) and driver 570 or newer.
+
+1. Install Docker and the NVIDIA Container Toolkit (once), then log out and back in:
+
+   ```shell
+   sudo apt install docker.io docker-buildx
+   sudo usermod -aG docker $USER
+   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+     sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+   curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+     sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+     sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+   sudo apt update && sudo apt install nvidia-container-toolkit
+   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+   ```
+
+2. Get the depth completion model `gaussian_lic/ckpt/spnet_480_640.onnx`. It is not in git: copy it from a machine that has it, or download [Large_300.pth](https://drive.google.com/file/d/11dujPviL4pKLEXytXK0mEmPBNQDqgEak/view?pli=1) into `gaussian_lic/ckpt` and export it:
+
+   ```shell
+   sudo apt install python3-pip
+   cd gaussian_lic/ckpt && ./setup_spnet.sh && ./export_onnx.sh && cd ../..
+   ```
+
+3. Build the image from the repository root (about 15 minutes, 39 GB). For an RTX 40xx or 30xx, add `--build-arg CUDA_ARCH=8.9` or `8.6`.
+
+   ```shell
+   docker build -t gaussian-lic -f docker/Dockerfile .
+   ```
+
+4. Start the GUI. It opens http://localhost:8080 in your browser. The first start takes a few extra minutes to build the TensorRT engines for your GPU.
+
+   ```shell
+   docker/gui.sh
+   ```
+
+5. Pick a recording (bags in your home folder, newest first; `docker/gui.sh bag_folder:=<folder>` for another folder) and click **Start**. Recordings with raw Ouster packets are converted first. The coloured point cloud builds up while it runs, and the Gaussian splats appear at the end. Results are saved in `~/gaussian_lic_result`. Press Ctrl-C in the terminal to quit.
 
 Gaussian-LIC2 is a photo-realistic LiDAR-Inertial-Camera Gaussian Splatting SLAM system, which simultaneously performs robust, accurate pose estimation and constructs a photo-realistic 3D Gaussian map in real time.
 
@@ -41,83 +79,112 @@ Questions? Please don't hesitate to reach out to Xiaolei Lang (Jerry) at jerry_l
 
 ## Install
 
-We test on ubuntu 20.04 with an NVIDIA RTX 3090 / 4090.
+The ROS 2 version is tested with ROS 2 Jazzy on Ubuntu 24.04 with an NVIDIA RTX 5090 (the original ROS 1 version was tested on Ubuntu 20.04 with an RTX 3090 / 4090). All third-party libraries go to `~/Software` without root, which is where the build looks for them by default.
+
+> This repository holds two **ROS 2** (ament / colcon) packages: the Gaussian-LIC mapping back-end in [`gaussian_lic/`](gaussian_lic) and its odometry front-end Coco-LIC in [`cocolic/`](cocolic), see [ROS 2 Interface](#ros-2-interface).
 
 1. Exit Conda environment.
 
-2. Prepare third-party libraries according to [Coco-LIC](https://github.com/APRIL-ZJU/Coco-LIC). 
-
-3. Install [CUDA 11.7](https://developer.nvidia.com/cuda-11-7-1-download-archive?target_os=Linux&target_arch=x86_64&Distribution=Ubuntu&target_version=20.04&target_type=runfile_local) with [cuDNN v8.9.7](https://developer.nvidia.com/rdp/cudnn-archive).
-
-4. Build [OpenCV 4.7.0](https://github.com/opencv/opencv/archive/refs/tags/4.7.0.tar.gz).（must be built with [opencv_contrib 4.7.0](https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.tar.gz) and CUDA, no installation required）
+2. Install [CUDA 12.8](https://developer.nvidia.com/cuda-12-8-1-download-archive) (toolkit only, the installed NVIDIA driver is left alone; RTX 50xx GPUs need CUDA >= 12.8).
 
    ```shell
-   mkdir -p ~/Software/opencv
-   cd ~/Software/opencv
-   wget https://github.com/opencv/opencv/archive/refs/tags/4.7.0.tar.gz && tar -zxvf 4.7.0.tar.gz && rm -rf 4.7.0.tar.gz
-   wget https://github.com/opencv/opencv_contrib/archive/refs/tags/4.7.0.tar.gz && tar -zxvf 4.7.0.tar.gz && rm -rf 4.7.0.tar.gz
-   
-   cd ~/Software/opencv/opencv-4.7.0
-   mkdir build && cd build
-   cmake -DCMAKE_BUILD_TYPE=RELEASE -DWITH_CUDA=ON -DWITH_CUDNN=ON -DOPENCV_DNN_CUDA=ON -DWITH_NVCUVID=ON -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.7 -DOPENCV_EXTRA_MODULES_PATH="../../opencv_contrib-4.7.0/modules" -DBUILD_TIFF=ON -DBUILD_ZLIB=ON -DBUILD_JASPER=ON -DBUILD_CCALIB=ON -DBUILD_JPEG=ON -DWITH_FFMPEG=ON ..
+   mkdir -p ~/Software && cd ~/Software
+   wget https://developer.download.nvidia.com/compute/cuda/12.8.1/local_installers/cuda_12.8.1_570.124.06_linux.run
+   sh cuda_12.8.1_570.124.06_linux.run --nox11 --silent --toolkit --toolkitpath=$HOME/Software/cuda-12.8 --no-man-page
+   rm cuda_12.8.1_570.124.06_linux.run
+   ```
+
+3. Build [OpenCV 4.12.0](https://github.com/opencv/opencv/archive/refs/tags/4.12.0.tar.gz).（must be built with [opencv_contrib 4.12.0](https://github.com/opencv/opencv_contrib/archive/refs/tags/4.12.0.tar.gz) and CUDA, no installation required; `CUDA_ARCH_BIN` is the compute capability of your GPU, 12.0 for RTX 50xx）
+
+   ```shell
+   mkdir -p ~/Software/opencv && cd ~/Software/opencv
+   wget -O opencv-4.12.0.tar.gz https://github.com/opencv/opencv/archive/refs/tags/4.12.0.tar.gz && tar -xzf opencv-4.12.0.tar.gz && rm opencv-4.12.0.tar.gz
+   wget -O opencv_contrib-4.12.0.tar.gz https://github.com/opencv/opencv_contrib/archive/refs/tags/4.12.0.tar.gz && tar -xzf opencv_contrib-4.12.0.tar.gz && rm opencv_contrib-4.12.0.tar.gz
+
+   mkdir -p opencv-4.12.0/build && cd opencv-4.12.0/build
+   export PATH=$HOME/Software/cuda-12.8/bin:$PATH
+   cmake -DCMAKE_BUILD_TYPE=Release \
+         -DWITH_CUDA=ON -DCUDA_ARCH_BIN=12.0 -DCUDA_ARCH_PTX= -DCUDA_TOOLKIT_ROOT_DIR=$HOME/Software/cuda-12.8 \
+         -DWITH_CUDNN=OFF -DOPENCV_DNN_CUDA=OFF -DWITH_NVCUVID=OFF -DWITH_NVCUVENC=OFF \
+         -DOPENCV_EXTRA_MODULES_PATH=../../opencv_contrib-4.12.0/modules \
+         -DBUILD_TIFF=ON -DBUILD_ZLIB=OFF -DBUILD_JPEG=ON \
+         -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_opencv_python3=OFF -DBUILD_JAVA=OFF ..
    make -j$(nproc)
    ```
 
-
-5. Prepare [LibTorch](https://pytorch.org/get-started/locally/).（no compilation or installation required）
-
-   ```shell
-   cd ~/Software
-   wget https://download.pytorch.org/libtorch/cu117/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu117.zip
-   unzip libtorch-cxx11-abi-shared-with-deps-2.0.1+cu117.zip && rm -rf libtorch-cxx11-abi-shared-with-deps-2.0.1+cu117.zip
-   ```
-
-
-6. Prepare [TensorRT](https://developer.nvidia.com/tensorrt/download).（no compilation or installation required）
+4. Prepare [LibTorch](https://pytorch.org/get-started/locally/).（no compilation or installation required）
 
    ```shell
    cd ~/Software
-   wget https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/secure/8.6.1/tars/TensorRT-8.6.1.6.Linux.x86_64-gnu.cuda-11.8.tar.gz
-   tar -zxvf TensorRT-8.6.1.6.Linux.x86_64-gnu.cuda-11.8.tar.gz && rm -rf TensorRT-8.6.1.6.Linux.x86_64-gnu.cuda-11.8.tar.gz
-   ```
-   
-7. Install Coco-LIC.
-
-   ```shell
-   mkdir -p ~/catkin_coco/src
-   cd ~/catkin_coco/src
-   git clone https://github.com/Livox-SDK/livox_ros_driver.git
-   cd ~/catkin_coco && catkin_make
-   cd ~/catkin_coco/src
-   git clone https://github.com/APRIL-ZJU/Coco-LIC.git
-   cd ~/catkin_coco && catkin_make
+   wget https://download.pytorch.org/libtorch/cu128/libtorch-cxx11-abi-shared-with-deps-2.7.1%2Bcu128.zip
+   unzip libtorch-cxx11-abi-shared-with-deps-2.7.1+cu128.zip && rm libtorch-cxx11-abi-shared-with-deps-2.7.1+cu128.zip
    ```
 
-8. Install Gaussian-LIC.
+5. Prepare [TensorRT](https://developer.nvidia.com/tensorrt/download).（no compilation or installation required; use TensorRT 10, not 11）
 
    ```shell
-   mkdir -p ~/catkin_gaussian/src
-   cd ~/catkin_gaussian/src
+   cd ~/Software
+   wget https://developer.download.nvidia.com/compute/machine-learning/tensorrt/10.16.1/tars/TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.9.tar.gz
+   tar -xzf TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.9.tar.gz && rm TensorRT-10.16.1.11.Linux.x86_64-gnu.cuda-12.9.tar.gz
+   ```
+
+6. Download Gaussian-LIC. (Coco-LIC is included)
+
+   ```shell
+   mkdir -p ~/ros2_gaussian/src
+   cd ~/ros2_gaussian/src
    git clone https://github.com/APRIL-ZJU/Gaussian-LIC.git
-   cd ~/catkin_gaussian && catkin_make
    ```
 
-9. TensorRT Deployment.
+7. TensorRT Deployment.
 
-   download and save [Large_300.pth](https://drive.google.com/file/d/11dujPviL4pKLEXytXK0mEmPBNQDqgEak/view?pli=1) to `~/catkin_gaussian/src/Gaussian-LIC/ckpt`.
+   download and save [Large_300.pth](https://drive.google.com/file/d/11dujPviL4pKLEXytXK0mEmPBNQDqgEak/view?pli=1) to `~/ros2_gaussian/src/Gaussian-LIC/gaussian_lic/ckpt`. `setup_spnet.sh` creates a Python venv in `~/Software/spnet-venv` with PyTorch for CUDA 12.8; `build_trt.sh` builds FP32 engines (FP16 engines return wrong depths with TensorRT 10 on RTX 50xx).
 
    ```shell
-   cd ~/catkin_gaussian/src/Gaussian-LIC/ckpt
-   
-   chmod +x setup_spnet.sh
+   cd ~/ros2_gaussian/src/Gaussian-LIC/gaussian_lic/ckpt
    ./setup_spnet.sh
-   
-   chmod +x export_onnx.sh
    ./export_onnx.sh
-   
-   chmod +x build_trt.sh
    ./build_trt.sh
    ```
+
+8. Build Gaussian-LIC and Coco-LIC. (the TensorRT engines from step 7 are installed with the package, so build them first, or re-run `colcon build` after rebuilding them)
+
+   ```shell
+   cd ~/ros2_gaussian
+   source /opt/ros/$ROS_DISTRO/setup.bash
+   rosdep install --from-paths src --ignore-src -y
+   colcon build --symlink-install
+   ```
+
+   If your third-party libraries are not in the `~/Software` locations above, point Gaussian-LIC at them (Coco-LIC uses the system OpenCV, so build it separately):
+
+   ```shell
+   colcon build --symlink-install --packages-select cocolic
+   colcon build --symlink-install --packages-select gaussian_lic --cmake-args \
+     -DOpenCV_DIR=/path/to/opencv/build \
+     -DTorch_DIR=/path/to/libtorch/share/cmake/Torch \
+     -DTENSORRT_ROOT=/path/to/TensorRT \
+     -DCUDA_TOOLKIT_ROOT_DIR=/path/to/cuda
+   ```
+
+### Docker
+
+Instead of the steps above, everything can run in a container ([`docker/`](docker)): ROS 2 Jazzy with ouster-ros, CUDA 12.8, LibTorch 2.7.1, TensorRT 10.16, OpenCV 4.12 with CUDA and the splat viewer. The host only needs the NVIDIA driver, Docker and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html), see [Quick Start](#quick-start-docker--gui) for the install commands.
+
+Build the image from the repository root (about 39 GB). It needs the exported SPNet model `gaussian_lic/ckpt/spnet_480_640.onnx` (`setup_spnet.sh` and `export_onnx.sh` in step 7). For a GPU other than an RTX 50xx add `--build-arg CUDA_ARCH=<compute capability>`, e.g. `8.9` for an RTX 40xx.
+
+```shell
+docker build -t gaussian-lic -f docker/Dockerfile .
+```
+
+`docker/run.sh` runs a command in the container, or a shell without one. The first start builds the TensorRT engines for the image sizes in the configs (a minute or two, kept in `~/.cache/gaussian_lic`). Your home folder is mounted at the same path, so bag paths are the same as outside the container. Results go to `~/gaussian_lic_result`: `gaussian_lic/` holds the renders, metrics and `point_cloud.ply` of the latest run, `cocolic/` the trajectory of every bag (TUM format). RViz2 opens on your display and the splat viewer is at http://localhost:8080 as usual:
+
+```shell
+docker/gui.sh  # the GUI, opens in your browser, see Own Data
+docker/run.sh ros2 run gaussian_lic replay_ouster_bag.py ~/<recording> ~/<recording>_replayed
+docker/run.sh ros2 launch gaussian_lic payload.launch.xml bag_path:=$HOME/<recording>_replayed
+docker/run.sh ros2 launch gaussian_lic view_map.launch.xml
+```
 
 ## Run
 
@@ -125,29 +192,77 @@ Quick start on the sequence CBD_Building_01 in the FAST-LIVO2 dataset.
 
 - Download [FAST-LIVO Dataset](https://connecthkuhk-my.sharepoint.com/personal/zhengcr_connect_hku_hk/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fzhengcr%5Fconnect%5Fhku%5Fhk%2FDocuments%2FFAST%2DLIVO%2DDatasets&ga=1) or [FAST-LIVO2 Dataset](https://connecthkuhk-my.sharepoint.com/:f:/g/personal/zhengcr_connect_hku_hk/ErdFNQtjMxZOorYKDTtK4ugBkogXfq1OfDm90GECouuIQA?e=KngY9Z) or [R3LIVE Dataset](https://github.com/ziv-lin/r3live_dataset) or [MCD Dataset](https://mcdviral.github.io/) or [M2DGR Dataset](https://github.com/SJTU-ViSYS/M2DGR).
 
-+ Modify `bag_path` in the `config/ct_odometry_fastlivo2.yaml` file of Coco-LIC.
++ Convert the ROS 1 bag to a ROS 2 bag (see the [Coco-LIC README](cocolic/README.md)), e.g. `rosbags-convert --src CBD_Building_01.bag --dst CBD_Building_01`.
+
++ Modify `bag_path` in `cocolic/config/ct_odometry_fastlivo2.yaml`, or pass `bag_path:=...` when launching Coco-LIC.
 
 + Launch Gaussian-LIC.
 
   ```shell
-  cd ~/catkin_gaussian
-  source devel/setup.bash
-  roslaunch gaussian_lic fastlivo2.launch  // The terminal will print "😋 Gaussian-LIC Ready!".
+  cd ~/ros2_gaussian
+  source install/setup.bash
+  ros2 launch gaussian_lic fastlivo2.launch.xml  // The terminal will print "😋 Gaussian-LIC Ready!".
   ```
 
 
 + Launch Coco-LIC.
 
-  Note：For real-time use and runtime analysis, please turn off the rviz in Coco-LIC by commenting the sentence `<node pkg="rviz" type="rviz" name="rviz_odom" output="log" required = "true" args="-d $(find cocolic)/config/coco.rviz" />`  in `odometry.launch`.
+  Note：For real-time use and runtime analysis, please turn off the rviz in Coco-LIC with `rviz:=false`.
 
   ```shell
-  cd ~/catkin_coco
-  source devel/setup.bash
-  roslaunch cocolic odometry.launch config_path:=config/ct_odometry_fastlivo2.yaml
+  cd ~/ros2_gaussian
+  source install/setup.bash
+  ros2 launch cocolic odometry.launch.xml config_path:=config/ct_odometry_fastlivo2.yaml rviz:=false
   ```
 
 
-+ The mapping and rendering results will be saved in  `~/catkin_gaussian/src/Gaussian-LIC/result`.
++ Once Coco-LIC has finished the bag, Gaussian-LIC evaluates the map, prints PSNR / SSIM / LPIPS and exits. The mapping and rendering results will be saved in  `~/ros2_gaussian/install/gaussian_lic/share/gaussian_lic/result` (this directory is wiped at the start of each evaluation).
+
+### Own Data: Ouster + Camera Rig
+
+The easiest way in is the GUI in the browser, `docker/gui.sh` (or `ros2 launch gaussian_lic gui.launch.xml` without Docker), which opens http://localhost:8080 in your default browser. It lists the recordings in your home folder (`bag_folder:=<dir>` for another one, or change it on the page), newest first. Pick one and click **Start**: a recording with raw Ouster packets is converted first, as below, into `<name>_replayed` next to it, which later runs reuse. While the recording is processed, the coloured point cloud of the map builds up live, the same as in RViz2 (`/gaussian_lic/map`, the Gaussian centres in their colour), with the camera trajectory. When Gaussian-LIC has saved its map, the page shows the Gaussian splats and the novel-view PSNR. **Show the last result** loads the map of the latest run again. The page runs the same `payload.launch.xml` as below, without RViz2.
+
+`cocolic/config/ct_odometry_payload.yaml` (with `cocolic/config/payload/`) and `gaussian_lic/config/payload.yaml` are a working setup for an Ouster OS-DOME-128 with its built-in IMU and a 2880x1860 camera. Coco-LIC tracks the camera on a 640x480 crop of it (`image_crop` / `image_resize` in `payload/camera.yaml`), Gaussian-LIC maps at the native resolution, 2880x1856 (`gs_image_crop` / `gs_cam_*` in `payload/camera.yaml`, image sizes must be multiples of 32). That needs its own depth completion engine, `./build_trt.sh 1856x2880` in `gaussian_lic/ckpt`, and about 9 GB of RAM for a 30 s recording (17 GB for 60 s) and 10 GB of GPU memory. A bag recorded with the Ouster raw packets has to be replayed through [ouster-ros](https://github.com/ouster-lidar/ouster-ros) first, so that it contains `/ouster/points` and `/ouster/imu`:
+
+```shell
+ros2 run gaussian_lic replay_ouster_bag.py <bag> <bag>_replayed
+```
+
+`<bag>` is the bag directory, or a single `.mcap` file of it when its `metadata.yaml` lists files that are missing. The script plays the packets, camera and VN100 topics in real time through the driver, records the result, and prints how many scans it got against how many the packets hold. It hands the driver the sensor metadata once, from a file: a bag that re-publishes `/ouster/metadata` would make the driver restart its scan assembly every time and drop most scans.
+
+Coco-LIC initialises gravity and the IMU biases from the first second of IMU data. A still start is best, but walking with the rig from the start works too, see `imu_excite_threshold` in `payload/imu.yaml`.
+
+Then run both Gaussian-LIC and Coco-LIC on it with one command:
+
+```shell
+ros2 launch gaussian_lic payload.launch.xml bag_path:=<bag>_replayed
+```
+
+This also opens
+
++ a live 3D Gaussian splat viewer in the browser at http://localhost:8080 ([viser](https://viser.studio)), fed by `/gaussian_lic/splats` (every Gaussian with its colour, opacity, scale and rotation), with the current camera and its trajectory. It starts at the first camera pose; drag to orbit, scroll to zoom. It keeps showing the final map after Gaussian-LIC exits, until you stop the launch with Ctrl-C. It needs viser once:
+
+  ```shell
+  python3 -m venv --without-pip --system-site-packages ~/Software/viser-venv
+  ~/Software/viser-venv/bin/python -m pip install viser "numpy<2"
+  ```
+
++ RViz2 with the Gaussian centres in their base colour (`/gaussian_lic/map`, Gaussians with opacity below 0.1 are hidden), the splat render from the latest keyframe (`/gaussian_lic/render`) next to the camera image, and Coco-LIC's trajectory.
+
+Gaussian-LIC exits after saving its results (renders, metrics and `point_cloud.ply`) to `install/gaussian_lic/share/gaussian_lic/result`, which every run replaces; add `result_path:=<dir>` to keep them elsewhere. To look at a saved map again in the splat viewer, `ros2 launch gaussian_lic view_map.launch.xml` (the latest run, or `ply:=<dir>/point_cloud.ply`). Add `viewer:=false` / `rviz:=false` to run without the viewer / RViz2.
+
+### ROS 2 Interface
+
+`gs_mapping` subscribes to the following topics. Messages of the four topics are paired by header stamp (±10 ms around the point cloud stamp). Mapping finishes and the results are saved once no point cloud has arrived for 5 s.
+
+| Topic | Type | Content |
+| --- | --- | --- |
+| `/points_for_gs` | `sensor_msgs/msg/PointCloud2` | colored points (`x y z rgb`) in the world frame, in front of the camera |
+| `/pose_for_gs` | `geometry_msgs/msg/PoseStamped` | camera-to-world pose `T_wc` |
+| `/image_for_gs` | `sensor_msgs/msg/Image` | color image (convertible to `bgr8`), `width`/`height` as in the config |
+| `/depth_for_gs` | `sensor_msgs/msg/Image` | sparse metric depth (`32FC1`) aligned with the image, 0 = no depth |
+
+Coco-LIC publishes these topics when `if_3dgs: true` is set in its config. Any other ROS 2 odometry front-end can feed Gaussian-LIC by publishing them.
 
 ## Checklist
 

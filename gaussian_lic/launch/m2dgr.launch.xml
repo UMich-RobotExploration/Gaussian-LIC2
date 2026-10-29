@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config_path"       default="config/m2dgr.yaml" />
+
+  <node pkg="gaussian_lic" exec="gs_mapping" name="$(anon gs_mapping)" output="screen" emulate_tty="true">
+    <!-- grow CUDA memory blocks in place instead of caching fragments: ~9 GB instead of ~27 GB at 2880x1856 -->
+    <env name="PYTORCH_CUDA_ALLOC_CONF" value="expandable_segments:True" />
+    <param name="config_path"     value="$(find-pkg-share gaussian_lic)/$(var config_path)" />
+    <param name="result_path"     value="$(find-pkg-share gaussian_lic)/result" />
+    <param name="lpips_path"      value="$(find-pkg-share gaussian_lic)/lpips" />
+  </node>
+
+</launch>

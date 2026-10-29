@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!-- Browser GUI: pick a payload recording, watch the LiDAR map grow and see the Gaussian splats at the end -->
+<launch>
+  <arg name="port"              default="8080" />
+  <arg name="bag_folder"        default="$(env GAUSSIAN_LIC_DATA $(env HOME))" description="folder with your recordings" />
+  <arg name="result_path"       default="$(find-pkg-share gaussian_lic)/result" description="renders, metrics and point_cloud.ply; replaced on every run" />
+  <arg name="open_browser"      default="true"  description="open the page in your default browser" />
+  <arg name="viewer_python"     default="$(env GAUSSIAN_LIC_VIEWER_PYTHON $(env HOME)/Software/viser-venv/bin/python)" description="a Python with viser installed" />
+
+  <!-- time to stop a running pipeline on Ctrl-C before launch escalates -->
+  <node pkg="gaussian_lic" exec="gui.py" name="gaussian_lic_gui" output="screen" launch-prefix="$(var viewer_python)" sigterm_timeout="60">
+    <param name="port"            value="$(var port)" />
+    <param name="bag_folder"      value="$(var bag_folder)" />
+    <param name="result_path"     value="$(var result_path)" />
+    <param name="open_browser"    value="$(var open_browser)" />
+  </node>
+
+</launch>

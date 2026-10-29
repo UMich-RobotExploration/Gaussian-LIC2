@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<!-- 3D view of a saved Gaussian-LIC map in the browser, by default the one from the latest run -->
+<launch>
+  <arg name="ply"               default="$(find-pkg-share gaussian_lic)/result/point_cloud.ply" />
+  <arg name="port"              default="8080" />
+  <arg name="viewer_python"     default="$(env GAUSSIAN_LIC_VIEWER_PYTHON $(env HOME)/Software/viser-venv/bin/python)" description="a Python with viser installed" />
+
+  <node pkg="gaussian_lic" exec="splat_viewer.py" name="splat_viewer" output="screen" launch-prefix="$(var viewer_python)">
+    <param name="ply"             value="$(var ply)" />
+    <param name="port"            value="$(var port)" />
+  </node>
+
+</launch>

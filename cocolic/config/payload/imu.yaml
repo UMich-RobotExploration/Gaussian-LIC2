@@ -1,0 +1,16 @@
+imu_topic:  /ouster/imu  # Ouster built-in IMU, published when /ouster/imu_packets is replayed through ouster-ros
+
+# gravity and IMU biases are initialised from the mean of the first 1 s of IMU data, accepted when the accel std
+# over that second is below this. A still start gives ~0.03; walking with the rig from the first sample ~6
+# (payload_20261021_161730), which still initialises well because the walking motion averages out over 1 s.
+# Use 0.5 to insist on a still start.
+imu_excite_threshold: 8.0
+gravity_mag: 9.80
+if_normalized: false  # ouster-ros publishes acceleration in m/s^2
+if_use_init_bg: false
+
+IMUExtrinsics:  # imu to imu
+    Trans: [0, 0, 0]
+    Rot: [ 1, 0, 0,
+           0, 1, 0,
+           0, 0,  1]

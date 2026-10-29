@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<!-- Gaussian-LIC + Coco-LIC on a replayed payload bag, e.g. bag_path:=$HOME/payload_20261027_132644_replayed -->
+<launch>
+  <arg name="bag_path"          description="ROS 2 bag with /ouster/points, /ouster/imu and /camera/left/image_raw" />
+  <arg name="config_path"       default="config/payload.yaml" />
+  <arg name="result_path"       default="$(find-pkg-share gaussian_lic)/result" description="renders, metrics and point_cloud.ply; replaced on every run" />
+  <arg name="rviz"              default="true" />
+  <arg name="viewer"            default="true"  description="3D Gaussian splat viewer in the browser (viser)" />
+  <arg name="viewer_port"       default="8080" />
+  <arg name="viewer_python"     default="$(env GAUSSIAN_LIC_VIEWER_PYTHON $(env HOME)/Software/viser-venv/bin/python)" description="a Python with viser installed" />
+
+  <node pkg="gaussian_lic" exec="gs_mapping" name="$(anon gs_mapping)" output="screen" emulate_tty="true">
+    <!-- grow CUDA memory blocks in place instead of caching fragments: ~9 GB instead of ~27 GB at 2880x1856 -->
+    <env name="PYTORCH_CUDA_ALLOC_CONF" value="expandable_segments:True" />
+    <param name="config_path"     value="$(find-pkg-share gaussian_lic)/$(var config_path)" />
+    <param name="result_path"     value="$(var result_path)" />
+    <param name="lpips_path"      value="$(find-pkg-share gaussian_lic)/lpips" />
+  </node>
+
+  <node pkg="gaussian_lic" exec="splat_viewer.py" name="splat_viewer" output="screen" launch-prefix="$(var viewer_python)" if="$(var viewer)">
+    <param name="port"                     value="$(var viewer_port)" />
+    <param name="camera_vertical_fov_deg"  value="38.5" />
+    <param name="camera_aspect"            value="1.5517" />
+  </node>
+
+  <node pkg="rviz2" exec="rviz2" name="rviz_gaussian_lic" output="log" args="-d $(find-pkg-share gaussian_lic)/config/gaussian_lic.rviz" if="$(var rviz)" />
+
+  <!-- start Coco-LIC once Gaussian-LIC is subscribed -->
+  <timer period="3.0">
+    <include file="$(find-pkg-share cocolic)/launch/odometry.launch.xml">
+      <arg name="config_path"     value="config/ct_odometry_payload.yaml" />
+      <arg name="bag_path"        value="$(var bag_path)" />
+      <arg name="rviz"            value="false" />
+    </include>
+  </timer>
+
+</launch>

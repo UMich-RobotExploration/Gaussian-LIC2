@@ -1,0 +1,45 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>cocolic</name>
+  <version>0.0.0</version>
+  <description>The cocolic package</description>
+
+  <maintainer email="ha@todo.todo">ha</maintainer>
+
+  <license>GPLv3</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_eigen</depend>
+  <depend>pcl_conversions</depend>
+  <depend>rosbag2_cpp</depend>
+
+  <depend>boost</depend>
+  <depend>eigen</depend>
+  <depend>libceres-dev</depend>
+  <depend>libgoogle-glog-dev</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>yaml-cpp</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <exec_depend>rosbag2_storage_default_plugins</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

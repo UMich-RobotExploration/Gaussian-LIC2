@@ -1,0 +1,34 @@
+# Left camera: 2880x1860 bayer_rggb16, centre-cropped to 2480x1860 and resized to 640x480
+# (the image size Gaussian-LIC's depth completion needs). The intrinsics below are for that 640x480 image;
+# cropping and scaling leave the distortion coefficients unchanged.
+image_topic: /camera/left/image_raw  # suffix "compressed" omitted
+image_crop: [200, 0, 2480, 1860]  # [x, y, width, height] kept from the raw image, applied before image_resize
+image_resize: [640, 480]  # [width, height]
+
+image_width: 640
+image_height: 480
+cam_fx: 685.654374
+cam_fy: 685.017058
+cam_cx: 318.970271
+cam_cy: 238.611535
+cam_d0: -0.011498
+cam_d1: 0.055025
+cam_d2: 0.0
+cam_d3: 0.0
+cam_d4: -0.016232
+
+CameraExtrinsics:  # camera to imu (camera_left_optical_frame -> os_imu; camera calibrated w.r.t. os_sensor)
+    Trans: [-0.116119, 0.171435, -0.002803]
+    Rot: [-0.025859, -0.999288, -0.027461,
+           0.680561, -0.037719,  0.731720,
+          -0.732235,  0.000233,  0.681052]
+
+# the image sent to Gaussian-LIC: native resolution with 2 rows cut at the top and bottom (its depth completion
+# needs sizes that are multiples of 32); intrinsics of that 2880x1856 image, same distortion as above
+gs_image_crop: [0, 2, 2880, 1856]  # [x, y, width, height] kept from the raw image
+gs_cam_fx: 2656.9107
+gs_cam_fy: 2654.4411
+gs_cam_cx: 1437.4473
+gs_cam_cy: 924.0572
+
+img_time_offset: 0.0  # camera to imu [s], all sensors are stamped on the same clock

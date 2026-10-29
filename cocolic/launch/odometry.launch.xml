@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config_path"       default="config/ct_odometry_r3live.yaml" />
+  <!-- <arg name="config_path"       default="config/ct_odometry_fastlivo.yaml" /> -->
+  <!-- <arg name="config_path"       default="config/ct_odometry_viral.yaml" /> -->
+  <!-- <arg name="config_path"       default="config/ct_odometry_lvisam.yaml" /> -->
+  <arg name="bag_path"          default="" />  
+  <arg name="pasue_time"        default="-1.0" />
+  <arg name="verbose"           default="false" />  
+  <arg name="rviz"              default="true" />
+
+  <node pkg="cocolic" exec="odometry_node" name="$(anon odometry_node)" output="screen" emulate_tty="true">
+    <param name="project_path"    type="str"   value="$(find-pkg-share cocolic)" />
+    <param name="config_path"     type="str"   value="$(find-pkg-share cocolic)/$(var config_path)" />
+    <param name="bag_path"        type="str"   value="$(var bag_path)" />
+    <param name="pasue_time"      type="float" value="$(var pasue_time)" />
+    <param name="verbose"         type="bool"  value="$(var verbose)" />
+  </node>
+
+  <node pkg="rviz2" exec="rviz2" name="rviz_odom" output="log" on_exit="shutdown" args="-d $(find-pkg-share cocolic)/config/coco.rviz" if="$(var rviz)" />
+</launch>
