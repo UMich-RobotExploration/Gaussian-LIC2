@@ -25,6 +25,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 # optional: decode bags with raw Ouster packets (/ouster/lidar_packets) directly, see src/lidar/ouster_packet_decoder.h
 find_package(ouster_ros QUIET)
@@ -83,6 +84,7 @@ list(APPEND thirdparty_libraries
         ${geometry_msgs_TARGETS}
         ${nav_msgs_TARGETS}
         ${visualization_msgs_TARGETS}
+        ${std_srvs_TARGETS}
         cv_bridge::cv_bridge
         tf2_ros::tf2_ros
         tf2_eigen::tf2_eigen

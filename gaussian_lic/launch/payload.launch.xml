@@ -1,13 +1,23 @@
 <?xml version="1.0"?>
-<!-- Gaussian-LIC + Coco-LIC on a payload recording, e.g. bag_path:=$HOME/payload_20261027_132644 -->
+<!-- Gaussian-LIC + Coco-LIC on a payload recording, e.g. bag_path:=$HOME/payload_20261027_132644, or on the live
+     topics without bag_path. Live, Ctrl-C finishes and saves the map, as does
+     ros2 service call /cocolic/finish std_srvs/srv/Trigger; on a recording Ctrl-C stops without saving. -->
 <launch>
-  <arg name="bag_path"          description="ROS 2 bag (folder or .mcap) with /camera/left/image_raw and the raw Ouster packets or /ouster/points + /ouster/imu" />
+  <arg name="bag_path"          default="" description="ROS 2 bag (folder or .mcap) with /camera/left/image_raw and the raw Ouster packets or /ouster/points + /ouster/imu; leave it out to read these topics live" />
+  <arg name="live_timeout"      default="5.0"  description="live: finish once nothing arrived for this long [s], 0 to finish only on /cocolic/finish" />
   <arg name="config_path"       default="config/payload.yaml" />
   <arg name="result_path"       default="$(find-pkg-share gaussian_lic)/result" description="renders, metrics and point_cloud.ply; replaced on every run" />
   <arg name="rviz"              default="true" />
   <arg name="viewer"            default="true"  description="3D Gaussian splat viewer in the browser (viser)" />
   <arg name="viewer_port"       default="8080" />
   <arg name="viewer_python"     default="$(env GAUSSIAN_LIC_VIEWER_PYTHON $(env HOME)/Software/viser-venv/bin/python)" description="a Python with viser installed" />
+
+  <!-- no bag_path; the x because '' parses as the text [] -->
+  <let name="live" value="$(equals '$(var bag_path)x' 'x')" />
+
+  <!-- live, Ctrl-C ends the run: Gaussian-LIC gets time to evaluate and save its map before launch escalates
+       (the default of every process, the others are done right away) -->
+  <let name="sigterm_timeout" value="$(if $(var live) 600 5)" />
 
   <node pkg="gaussian_lic" exec="gs_mapping" name="$(anon gs_mapping)" output="screen" emulate_tty="true">
     <!-- grow CUDA memory blocks in place instead of caching fragments: ~9 GB instead of ~27 GB at 2880x1856 -->
@@ -30,6 +40,8 @@
     <include file="$(find-pkg-share cocolic)/launch/odometry.launch.xml">
       <arg name="config_path"     value="config/ct_odometry_payload.yaml" />
       <arg name="bag_path"        value="$(var bag_path)" />
+      <arg name="live"            value="$(var live)" />
+      <arg name="live_timeout"    value="$(var live_timeout)" />
       <arg name="rviz"            value="false" />
     </include>
   </timer>

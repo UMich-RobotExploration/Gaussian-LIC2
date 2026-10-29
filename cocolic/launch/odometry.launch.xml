@@ -5,6 +5,8 @@
   <!-- <arg name="config_path"       default="config/ct_odometry_viral.yaml" /> -->
   <!-- <arg name="config_path"       default="config/ct_odometry_lvisam.yaml" /> -->
   <arg name="bag_path"          default="" />  
+  <arg name="live"              default="false" description="read the live topics instead of a bag" />
+  <arg name="live_timeout"      default="5.0"   description="live: finish once nothing arrived for this long [s], 0 to finish only on /cocolic/finish" />
   <arg name="pasue_time"        default="-1.0" />
   <arg name="verbose"           default="false" />  
   <arg name="rviz"              default="true" />
@@ -13,6 +15,8 @@
     <param name="project_path"    type="str"   value="$(find-pkg-share cocolic)" />
     <param name="config_path"     type="str"   value="$(find-pkg-share cocolic)/$(var config_path)" />
     <param name="bag_path"        type="str"   value="$(var bag_path)" />
+    <param name="live"            type="bool"  value="$(var live)" />
+    <param name="live_timeout"    type="float" value="$(var live_timeout)" />
     <param name="pasue_time"      type="float" value="$(var pasue_time)" />
     <param name="verbose"         type="bool"  value="$(var verbose)" />
   </node>

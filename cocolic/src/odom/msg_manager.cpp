@@ -156,7 +156,36 @@ namespace cocolic
       velodyne_feature_extraction_ =
           std::make_shared<VelodyneFeatureExtraction>(lidar_node, nh);
 
-    LoadBag(node);
+    callback_group_ = nh->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive, false);
+    finish_service_ = nh->create_service<std_srvs::srv::Trigger>(
+        "/cocolic/finish",
+        [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+               std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+        {
+          finish_requested_ = true;
+          live_cond_.notify_all();
+          response->success = true;
+          response->message = "Coco-LIC stops reading its input; Gaussian-LIC saves its map once the data stops";
+        },
+        rclcpp::ServicesQoS(), callback_group_);
+    executor_ = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    executor_->add_callback_group(callback_group_, nh->get_node_base_interface());
+    executor_thread_ = std::thread([this] { executor_->spin(); });
+
+    live_ = nh->declare_parameter<bool>("live", false);
+    live_timeout_ = nh->declare_parameter<double>("live_timeout", 5.0);
+    if (live_)
+      SubscribeLive(nh);
+    else
+      LoadBag(node);
+  }
+
+  MsgManager::~MsgManager()
+  {
+    if (executor_)
+      executor_->cancel();
+    if (executor_thread_.joinable())
+      executor_thread_.join();
   }
 
   void MsgManager::LoadBag(const YAML::Node &node)
@@ -179,7 +208,27 @@ namespace cocolic
     bag_reader_->open(bag_path_);  // a ROS 2 bag directory, or a single .mcap / .db3 file
 
     const auto &metadata = bag_reader_->get_metadata();
-    SetupOusterDecoder(metadata, topics);
+    auto has_topic = [&metadata](const std::string &topic)
+    {
+      for (const auto &info : metadata.topics_with_message_count)
+        if (info.topic_metadata.name == topic)
+          return info.message_count > 0;
+      return false;
+    };
+    SetupOusterDecoder(has_topic, topics);
+#ifdef COCOLIC_WITH_OUSTER
+    if (!ouster_metadata_topic_.empty())  // the first metadata message; later ones repeat it
+    {
+      rosbag2_cpp::Reader reader;
+      reader.open(bag_path_);
+      rosbag2_storage::StorageFilter filter;
+      filter.topics = {ouster_metadata_topic_};
+      reader.set_filter(filter);
+      rclcpp::SerializedMessage serialized_metadata(*reader.read_next()->serialized_data);
+      ouster_decoder_ = std::make_unique<OusterPacketDecoder>(
+          DeserializeMsg<std_msgs::msg::String>(serialized_metadata)->data);
+    }
+#endif
     int64_t bag_begin = metadata.starting_time.time_since_epoch().count();
     int64_t time_start = bag_begin + int64_t(bag_start * S_TO_NS);
     int64_t time_finish = (bag_durr < 0) ? bag_begin + metadata.duration.count()
@@ -191,7 +240,7 @@ namespace cocolic
     {
       if (std::find(topics.begin(), topics.end(), info.topic_metadata.name) == topics.end())
         continue;
-      bag_topic_types_[info.topic_metadata.name] = info.topic_metadata.type;
+      topic_types_[info.topic_metadata.name] = info.topic_metadata.type;
       num_msgs += info.message_count;
     }
     if (num_msgs == 0)
@@ -212,60 +261,207 @@ namespace cocolic
     //           << " with duration " << (time_finish - time_start).toSec();
   }
 
-  // A rotating lidar topic that is not in the bag, recorded as the raw packets of an Ouster instead (<ns>/lidar_packets
-  // with <ns>/metadata, e.g. /ouster/points -> /ouster/lidar_packets): decode them as ouster-ros would, and the IMU
-  // packets too (<ns>/imu_packets) when the IMU topic is missing as well.
-  void MsgManager::SetupOusterDecoder(const rosbag2_storage::BagMetadata &metadata, std::vector<std::string> &topics)
+  void MsgManager::SubscribeLive(const rclcpp::Node::SharedPtr &nh)
   {
-    auto count = [&metadata](const std::string &topic) -> size_t
+    auto has_topic = [&nh](const std::string &topic) { return nh->count_publishers(topic) > 0; };
+    auto missing_topics = [&]()
     {
-      for (const auto &info : metadata.topics_with_message_count)
-        if (info.topic_metadata.name == topic)
-          return info.message_count;
-      return 0;
+      std::vector<std::string> missing;
+      bool imu_packets = false;  // the IMU of an Ouster published as packets
+      for (size_t i = 0; i < lidar_topics_.size(); ++i)
+      {
+        const std::string ns = lidar_topics_[i].substr(0, lidar_topics_[i].rfind('/'));
+        if (has_topic(lidar_topics_[i]))
+          continue;
+        if (lidar_types[i] == VLP && has_topic(ns + "/lidar_packets") && has_topic(ns + "/metadata"))
+          imu_packets |= imu_topic_.rfind(ns + "/", 0) == 0 && has_topic(ns + "/imu_packets");
+        else
+          missing.push_back(lidar_topics_[i]);
+      }
+      if (!has_topic(imu_topic_) && !imu_packets)
+        missing.push_back(imu_topic_);
+      if (use_image_ && !has_topic(image_topic_) && !has_topic(image_topic_compressed_))
+        missing.push_back(image_topic_);
+      return missing;
     };
 
+    // discovery takes a moment: report what is missing once it is still missing after a second
+    auto wait_start = std::chrono::steady_clock::now();
+    std::vector<std::string> missing, reported;
+    while (rclcpp::ok() && !finish_requested_ && !(missing = missing_topics()).empty())
+    {
+      if (missing != reported && std::chrono::steady_clock::now() - wait_start > std::chrono::seconds(1))
+      {
+        std::cout << "\n🍺 Live: waiting for";
+        for (const auto &topic : missing)
+          std::cout << " " << topic;
+        std::cout << std::endl;
+        reported = missing;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    if (!missing.empty())  // stopped while waiting
+    {
+      has_valid_msg_ = false;
+      return;
+    }
+
+    std::vector<std::string> topics = {imu_topic_};
+    if (use_image_)  // not both: image_transport publishes the compressed one next to the raw one
+      topics.push_back(has_topic(image_topic_) ? image_topic_ : image_topic_compressed_);
+    for (auto &v : lidar_topics_)
+      topics.push_back(v);
+    SetupOusterDecoder(has_topic, topics);
+    if (!ouster_metadata_topic_.empty())
+      topics.push_back(ouster_metadata_topic_);
+
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = callback_group_;
+    std::cout << "\n🍺 Live: reading";
+    for (const std::string &topic : topics)
+    {
+      std::vector<rclcpp::TopicEndpointInfo> publishers = nh->get_publishers_info_by_topic(topic);
+      if (publishers.empty())  // decoded from packets instead
+        continue;
+      topic_types_[topic] = publishers.front().topic_type();
+
+      // as the publishers offer it: reliable / transient local when all of them are
+      auto all_publishers = [&publishers](auto offers)
+      { return std::all_of(publishers.begin(), publishers.end(), offers); };
+      bool reliable = all_publishers([](const rclcpp::TopicEndpointInfo &p)
+                                     { return p.qos_profile().reliability() == rclcpp::ReliabilityPolicy::Reliable; });
+      bool latched = all_publishers([](const rclcpp::TopicEndpointInfo &p)
+                                    { return p.qos_profile().durability() == rclcpp::DurabilityPolicy::TransientLocal; });
+      bool is_image = topic == image_topic_ || topic == image_topic_compressed_;
+      bool is_metadata = topic == ouster_metadata_topic_;
+      rclcpp::QoS qos(is_image ? 10 : is_metadata ? 1 : 1000);
+      qos.reliability(reliable ? rclcpp::ReliabilityPolicy::Reliable : rclcpp::ReliabilityPolicy::BestEffort);
+      if (is_metadata && latched)  // sent once when the driver starts
+        qos.transient_local();
+
+      live_subs_.push_back(nh->create_generic_subscription(
+          topic, topic_types_[topic], qos,
+          [this, topic, is_image](std::shared_ptr<const rclcpp::SerializedMessage> msg)
+          {
+            if (finish_requested_)
+              return;
+            std::lock_guard<std::mutex> lock(live_mutex_);
+            live_last_arrival_ = std::chrono::steady_clock::now();
+            live_queue_.push_back({topic, msg, is_image, rclcpp::Clock().now().seconds()});
+            if (is_image && ++live_queued_images_ > 10)  // the odometry is behind: drop the oldest image
+            {
+              live_queue_.erase(std::find_if(live_queue_.begin(), live_queue_.end(),
+                                             [](const LiveMsg &m) { return m.is_image; }));
+              live_queued_images_--;
+              live_dropped_images_++;
+            }
+            live_cond_.notify_one();
+          },
+          options));
+      std::cout << " " << topic;
+    }
+    std::cout << " (finish with: ros2 service call /cocolic/finish std_srvs/srv/Trigger"
+              << (live_timeout_ > 0 ? ", or stop publishing" : "") << ")" << std::endl;
+  }
+
+  // A rotating lidar topic that is missing, published as the raw packets of an Ouster instead (<ns>/lidar_packets
+  // with <ns>/metadata, e.g. /ouster/points -> /ouster/lidar_packets): decode them as ouster-ros would, and the IMU
+  // packets too (<ns>/imu_packets) when the IMU topic is missing as well.
+  void MsgManager::SetupOusterDecoder(const std::function<bool(const std::string &)> &has_topic,
+                                      std::vector<std::string> &topics)
+  {
+    const std::string source = live_ ? " published" : " in the bag";
     for (size_t i = 0; i < lidar_topics_.size(); ++i)
     {
       const std::string &topic = lidar_topics_[i];
       const std::string ns = topic.substr(0, topic.rfind('/'));
-      if (lidar_types[i] != VLP || count(topic) > 0 || count(ns + "/lidar_packets") == 0)
+      if (lidar_types[i] != VLP || has_topic(topic) || !has_topic(ns + "/lidar_packets"))
         continue;
-      if (count(ns + "/metadata") == 0)
+      if (!has_topic(ns + "/metadata"))
       {
         std::cout << "\n[Error] " << ns << "/lidar_packets without " << ns << "/metadata cannot be decoded.\n";
         return;
       }
 #ifdef COCOLIC_WITH_OUSTER
-      rosbag2_cpp::Reader reader;  // the first metadata message; later ones repeat it
-      reader.open(bag_path_);
-      rosbag2_storage::StorageFilter filter;
-      filter.topics = {ns + "/metadata"};
-      reader.set_filter(filter);
-      rclcpp::SerializedMessage serialized_metadata(*reader.read_next()->serialized_data);
-      ouster_decoder_ = std::make_unique<OusterPacketDecoder>(
-          DeserializeMsg<std_msgs::msg::String>(serialized_metadata)->data);
-
       ouster_lidar_idx_ = i;
+      ouster_metadata_topic_ = ns + "/metadata";
       ouster_lidar_packets_topic_ = ns + "/lidar_packets";
       topics.push_back(ouster_lidar_packets_topic_);
-      if (count(imu_topic_) == 0 && count(ns + "/imu_packets") > 0 && imu_topic_.rfind(ns + "/", 0) == 0)
+      if (!has_topic(imu_topic_) && has_topic(ns + "/imu_packets") && imu_topic_.rfind(ns + "/", 0) == 0)
       {
         ouster_imu_packets_topic_ = ns + "/imu_packets";
         topics.push_back(ouster_imu_packets_topic_);
       }
-      std::cout << "\n🍺 No " << topic << " in the bag: decoding " << ouster_lidar_packets_topic_
+      std::cout << "\n🍺 No " << topic << source << ": decoding " << ouster_lidar_packets_topic_
                 << (ouster_imu_packets_topic_.empty() ? "" : " and " + ouster_imu_packets_topic_) << ".\n";
 #else
-      std::cout << "\n[Error] The bag has " << ns << "/lidar_packets but no " << topic
-                << ": build cocolic with ouster_ros to read raw Ouster packets, or replay them through ouster-ros.\n";
+      std::cout << "\n[Error] " << ns << "/lidar_packets but no " << topic << source
+                << ": build cocolic with ouster_ros to read raw Ouster packets, or convert them with ouster-ros.\n";
 #endif
       return;
     }
   }
 
+  bool MsgManager::SpinOnce()
+  {
+    if (live_)
+      return SpinLiveOnce();
+    SpinBagOnce();
+    return has_valid_msg_;
+  }
+
+  bool MsgManager::SpinLiveOnce()
+  {
+    std::unique_lock<std::mutex> lock(live_mutex_);
+    live_cond_.wait_for(lock, std::chrono::milliseconds(100),
+                        [this] { return !live_queue_.empty() || finish_requested_; });
+    auto now = std::chrono::steady_clock::now();
+    if (!finish_requested_ && live_queue_.empty() && live_timeout_ > 0 &&
+        live_last_arrival_ != std::chrono::steady_clock::time_point() &&
+        now - live_last_arrival_ > std::chrono::duration<double>(live_timeout_))
+    {
+      std::cout << "\n🍺 Live: nothing arrived for " << live_timeout_ << " s, finishing." << std::endl;
+      finish_requested_ = true;
+    }
+    else if (finish_requested_)
+    {
+      std::cout << "\n🍺 Live: finish requested, stopping." << std::endl;
+    }
+    if (finish_requested_ || !rclcpp::ok())
+    {
+      finish_requested_ = true;  // the subscriptions drop what still arrives
+      live_queue_.clear();
+      has_valid_msg_ = false;
+      return false;
+    }
+    if (live_queue_.empty())
+      return false;
+
+    LiveMsg msg = std::move(live_queue_.front());
+    live_queue_.pop_front();
+    live_queued_images_ -= msg.is_image;
+    double behind = rclcpp::Clock().now().seconds() - msg.recv_time;
+    if ((behind > 1.0 || live_dropped_images_ > 0) && now - live_last_warning_ > std::chrono::seconds(5))
+    {
+      std::cout << YELLOW << "[Live] Coco-LIC is " << behind << " s behind the live data, dropped "
+                << live_dropped_images_ << " camera images to keep up." << RESET << std::endl;
+      live_last_warning_ = now;
+      live_dropped_images_ = 0;
+    }
+    lock.unlock();
+
+    HandleMsg(msg.topic, *msg.data, msg.recv_time);
+    return true;
+  }
+
   void MsgManager::SpinBagOnce()
   {
+    if (finish_requested_)
+    {
+      std::cout << "\n🍺 Finish requested: stopping before the end of the bag." << std::endl;
+      has_valid_msg_ = false;
+      return;
+    }
     if (!bag_reader_->has_next())
     {
       has_valid_msg_ = false;
@@ -279,12 +475,23 @@ namespace cocolic
       has_valid_msg_ = false;
       return;
     }
-    const std::string &msg_topic = m->topic_name;
-    const std::string &msg_type = bag_topic_types_[msg_topic];
-    double msg_time = m->recv_timestamp * NS_TO_S;
     rclcpp::SerializedMessage serialized_msg(*m->serialized_data);
+    HandleMsg(m->topic_name, serialized_msg, m->recv_timestamp * NS_TO_S);
+  }
+
+  void MsgManager::HandleMsg(const std::string &msg_topic, const rclcpp::SerializedMessage &serialized_msg,
+                             double msg_time)
+  {
+    const std::string &msg_type = topic_types_[msg_topic];
 
 #ifdef COCOLIC_WITH_OUSTER
+    if (msg_topic == ouster_metadata_topic_)  // live: decode from the first one on, later ones repeat it
+    {
+      if (!ouster_decoder_)
+        ouster_decoder_ = std::make_unique<OusterPacketDecoder>(
+            DeserializeMsg<std_msgs::msg::String>(serialized_msg)->data);
+      return;
+    }
     if (ouster_decoder_ && msg_topic == ouster_lidar_packets_topic_)  // raw Ouster packets
     {
       auto packet = DeserializeMsg<ouster_sensor_msgs::msg::PacketMsg>(serialized_msg);

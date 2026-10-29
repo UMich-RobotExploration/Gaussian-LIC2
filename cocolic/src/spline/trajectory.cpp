@@ -17,6 +17,7 @@
  */
 
 #include "trajectory.h"
+#include <utils/parallel.h>
 #include <fstream>
 
 namespace cocolic {
@@ -124,10 +125,15 @@ void Trajectory::UndistortScanInG(const PosCloud &scan_raw,
   start_idx -= 2;
   if (start_idx < 0) start_idx = 0;
 
-  std::size_t cnt = 0;
-  for (auto const &raw_p : scan_raw.points) {
-    if (std::isnan(raw_p.x)) {
-      scan_in_target.is_dense = false;
+  // every point on its own, in parallel (a full scan for Gaussian-LIC is ~50 ms on one core), then the NaN points
+  // are left out in order
+  const int num_points = scan_raw.size();
+  std::vector<char> is_valid(num_points);
+#pragma omp parallel for schedule(static) num_threads(NumPointThreads())
+  for (int i = 0; i < num_points; i++) {
+    const auto &raw_p = scan_raw.points[i];
+    is_valid[i] = !std::isnan(raw_p.x);
+    if (!is_valid[i]) {
       // LOG(WARNING) << "[UndistortScanInG] input cloud exists NAN point";
       continue;
     }
@@ -144,9 +150,17 @@ void Trajectory::UndistortScanInG(const PosCloud &scan_raw,
     point.intensity = raw_p.intensity;
     point.timestamp = raw_p.timestamp;
 
-    scan_in_target[cnt++] = point;
+    scan_in_target[i] = point;
   }
 
+  std::size_t cnt = 0;
+  for (int i = 0; i < num_points; i++) {
+    if (!is_valid[i]) {
+      scan_in_target.is_dense = false;
+      continue;
+    }
+    scan_in_target[cnt++] = scan_in_target[i];
+  }
   scan_in_target.resize(cnt);
 }
 

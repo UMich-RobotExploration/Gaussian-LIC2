@@ -69,6 +69,8 @@ Runs Gaussian-LIC on recordings from the Ouster + camera payload, in a GUI in yo
 
    The GUI lists the recordings in your home folder, newest first. For recordings elsewhere, e.g. on an external drive: `GAUSSIAN_LIC_DATA=/media/$USER/<drive> docker/gui.sh`.
 
+   To map while the payload is running instead, pick **Live topics** as the source. The page shows which of the payload's sensors it can see; this computer has to be on the payload's network with the same `ROS_DOMAIN_ID` (as for `ros2 topic list`). Click **Finish** to end the run, and Gaussian-LIC saves the map.
+
 Gaussian-LIC2 is a photo-realistic LiDAR-Inertial-Camera Gaussian Splatting SLAM system, which simultaneously performs robust, accurate pose estimation and constructs a photo-realistic 3D Gaussian map in real time.
 
 <p align="center">
@@ -196,8 +198,11 @@ docker/build.sh
 ```shell
 docker/gui.sh  # the GUI, opens in your browser, see Own Data
 docker/run.sh ros2 launch gaussian_lic payload.launch.xml bag_path:=$HOME/<recording>
+docker/run.sh ros2 launch gaussian_lic payload.launch.xml  # the live topics, Ctrl-C finishes and saves the map
 docker/run.sh ros2 launch gaussian_lic view_map.launch.xml
 ```
+
+The container uses the host network and the ROS discovery settings of the shell it is started from (`ROS_DOMAIN_ID`, `ROS_AUTOMATIC_DISCOVERY_RANGE`, `ROS_STATIC_PEERS`, a Fast DDS profile file), so it sees the same topics as a node started there. The image uses Fast DDS, the ROS 2 default; nodes on another DDS implementation (e.g. Cyclone DDS) usually work with it, but ROS does not guarantee that.
 
 ## Run
 
@@ -233,7 +238,7 @@ Quick start on the sequence CBD_Building_01 in the FAST-LIVO2 dataset.
 
 ### Own Data: Ouster + Camera Rig
 
-The easiest way in is the GUI in the browser, `docker/gui.sh` (or `ros2 launch gaussian_lic gui.launch.xml` without Docker), which opens http://localhost:8080 in your default browser. It lists the recordings in your home folder (`bag_folder:=<dir>` for another one, or change it on the page), newest first. Pick one and click **Start**. While the recording is processed, the coloured point cloud of the map builds up live, the same as in RViz2 (`/gaussian_lic/map`, the Gaussian centres in their colour), with the camera trajectory. When Gaussian-LIC has saved its map, the page shows the Gaussian splats and the novel-view PSNR. **Show the last result** loads the map of the latest run again. The page runs the same `payload.launch.xml` as below, without RViz2.
+The easiest way in is the GUI in the browser, `docker/gui.sh` (or `ros2 launch gaussian_lic gui.launch.xml` without Docker), which opens http://localhost:8080 in your default browser. It lists the recordings in your home folder (`bag_folder:=<dir>` for another one, or change it on the page), newest first. Pick one and click **Start**, or pick **Live topics** as the source to map while the payload runs (see below) and click **Finish** to end. While the data is processed, the coloured point cloud of the map builds up live, the same as in RViz2 (`/gaussian_lic/map`, the Gaussian centres in their colour), with the camera trajectory. When Gaussian-LIC has saved its map, the page shows the Gaussian splats and the novel-view PSNR. **Show the last result** loads the map of the latest run again. The page runs the same `payload.launch.xml` as below, without RViz2.
 
 `cocolic/config/ct_odometry_payload.yaml` (with `cocolic/config/payload/`) and `gaussian_lic/config/payload.yaml` are a working setup for an Ouster OS-DOME-128 with its built-in IMU and a 2880x1860 camera. Coco-LIC tracks the camera on a 640x480 crop of it (`image_crop` / `image_resize` in `payload/camera.yaml`), Gaussian-LIC maps at the native resolution, 2880x1856 (`gs_image_crop` / `gs_cam_*` in `payload/camera.yaml`, image sizes must be multiples of 32). That needs its own depth completion engine, `./build_trt.sh 1856x2880` in `gaussian_lic/ckpt`, and about 9 GB of RAM for a 30 s recording (17 GB for 60 s) and 10 GB of GPU memory.
 
@@ -259,6 +264,14 @@ This also opens
   ```
 
 + RViz2 with the Gaussian centres in their base colour (`/gaussian_lic/map`, Gaussians with opacity below 0.1 are hidden), the splat render from the latest keyframe (`/gaussian_lic/render`) next to the camera image, and Coco-LIC's trajectory.
+
+Without `bag_path`, the same launch maps the **live topics** while the payload runs:
+
+```shell
+ros2 launch gaussian_lic payload.launch.xml
+```
+
+Coco-LIC waits until every sensor is published (it says which ones it is waiting for), then reads the same topics as from a recording: `/camera/left/image_raw`, and `/ouster/points` with `/ouster/imu` or the raw packets, which it decodes. To end the run, press **Ctrl-C**, or call `ros2 service call /cocolic/finish std_srvs/srv/Trigger`, or stop publishing: Coco-LIC finishes once nothing has arrived for `live_timeout:=5.0` s (`0`: never), so playing a recording with `ros2 bag play` works too. Gaussian-LIC then evaluates and saves its map as at the end of a recording, which takes a minute or two after Ctrl-C. On a recording, Ctrl-C stops without saving, and the same service call stops early and saves. Coco-LIC's trajectory is saved as `live_<date>_<time>_LICO.txt`. Coco-LIC needs about 25 s for a 30 s payload recording on a 32-thread CPU next to Gaussian-LIC; if it falls behind the live data, it drops camera images (never LiDAR or IMU data) and says so.
 
 Gaussian-LIC exits after saving its results (renders, metrics and `point_cloud.ply`) to `install/gaussian_lic/share/gaussian_lic/result`, which every run replaces; add `result_path:=<dir>` to keep them elsewhere. To look at a saved map again in the splat viewer, `ros2 launch gaussian_lic view_map.launch.xml` (the latest run, or `ply:=<dir>/point_cloud.ply`). Add `viewer:=false` / `rviz:=false` to run without the viewer / RViz2.
 

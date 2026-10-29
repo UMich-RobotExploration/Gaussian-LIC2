@@ -18,9 +18,11 @@
 
 #include <tf2_eigen/tf2_eigen.hpp>
 #include <odom/odometry_manager.h>
+#include <utils/parallel.h>
 #include <numeric>
 
 #include <boost/filesystem.hpp>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <string>
@@ -145,17 +147,28 @@ namespace cocolic
                                           const std::string &bag_path)
   {
     boost::filesystem::path path_cfg(config_path);
-    boost::filesystem::path path_bag(bag_path);
-    if (path_bag.filename() == "." || path_bag.filename().empty())  // trailing slash
-      path_bag = path_bag.parent_path();
-    // a ROS 2 bag is a directory, or a single .mcap / .db3 file
-    bool is_bag_dir = boost::filesystem::is_directory(path_bag);
-    if (!is_bag_dir && path_bag.extension() != ".bag" &&
-        path_bag.extension() != ".mcap" && path_bag.extension() != ".db3")
+    std::string bag_name_;
+    if (msg_manager_->IsLive())  // named after the start time, e.g. live_20261029_153000
     {
-      return false;
+      std::time_t now = std::time(nullptr);
+      char name[32];
+      std::strftime(name, sizeof(name), "live_%Y%m%d_%H%M%S", std::localtime(&now));
+      bag_name_ = name;
     }
-    std::string bag_name_ = is_bag_dir ? path_bag.filename().string() : path_bag.stem().string();
+    else
+    {
+      boost::filesystem::path path_bag(bag_path);
+      if (path_bag.filename() == "." || path_bag.filename().empty())  // trailing slash
+        path_bag = path_bag.parent_path();
+      // a ROS 2 bag is a directory, or a single .mcap / .db3 file
+      bool is_bag_dir = boost::filesystem::is_directory(path_bag);
+      if (!is_bag_dir && path_bag.extension() != ".bag" &&
+          path_bag.extension() != ".mcap" && path_bag.extension() != ".db3")
+      {
+        return false;
+      }
+      bag_name_ = is_bag_dir ? path_bag.filename().string() : path_bag.stem().string();
+    }
 
     std::string cache_path_parent_ = path_cfg.parent_path().string();
     cache_path_ = cache_path_parent_ + "/data/" + bag_name_;
@@ -169,10 +182,14 @@ namespace cocolic
     while (rclcpp::ok())
     {
       /// [1] process a newly arrived frame of data: lidar or imu or camera
-      msg_manager_->SpinBagOnce();
+      bool has_new_msg = msg_manager_->SpinOnce();
       if (!msg_manager_->has_valid_msg_)
       {
         break;
+      }
+      if (!has_new_msg)  // live: nothing arrived yet
+      {
+        continue;
       }
 
       /// [2] static initialization, do not move at the begging!
@@ -807,28 +824,40 @@ namespace cocolic
         int H = img.rows;
         int W = img.cols;
 
-        // depth
+        // depth: the nearest point of the last 5 scans in every pixel; the points are projected in parallel
+        // (~1M of them, 20 ms on one core), then written in order
         cv::Mat depthmap = cv::Mat::zeros(H, W, CV_32FC1);
+        Eigen::Matrix3d R_cw = inv_pose_cam.unit_quaternion().toRotationMatrix();
+        Eigen::Vector3d t_cw = inv_pose_cam.translation();
         for (int j = std::max(0, int(lidarpoints.size()) - 5); j < lidarpoints.size(); j++)
         {
           auto lidarpoint = lidarpoints[j];
-          for (int i = 0; i < lidarpoint->size(); i++)
+          const int num_points = lidarpoint->size();
+          std::vector<int> pixel(num_points);  // -1: not in the image
+          std::vector<double> pixel_depth(num_points);
+#pragma omp parallel for schedule(static) num_threads(NumPointThreads())
+          for (int i = 0; i < num_points; i++)
           {
             auto pt = lidarpoint->points[i];
             Eigen::Vector3d pt_w = Eigen::Vector3d(pt.x, pt.y, pt.z);
-            Eigen::Vector3d pt_c = inv_pose_cam.unit_quaternion().toRotationMatrix() * pt_w + inv_pose_cam.translation();
+            Eigen::Vector3d pt_c = R_cw * pt_w + t_cw;
             double depth = pt_c(2);
             pt_c /= pt_c(2);
             double u = fx * pt_c(0) + cx;
             double v = fy * pt_c(1) + cy;
             int i_u = std::round(u), i_v = std::round(v);
-            if (depth <= 0) continue;
-            if (!((i_u >= 0 && i_u < W && i_v >= 0 && i_v < H))) continue;
-
-            float& current_depth = depthmap.at<float>(i_v, i_u);
-            if (current_depth == 0 || depth < current_depth) 
+            bool in_image = depth > 0 && i_u >= 0 && i_u < W && i_v >= 0 && i_v < H;
+            pixel[i] = in_image ? i_v * W + i_u : -1;
+            pixel_depth[i] = depth;
+          }
+          float *depths = depthmap.ptr<float>();
+          for (int i = 0; i < num_points; i++)
+          {
+            if (pixel[i] < 0) continue;
+            float& current_depth = depths[pixel[i]];
+            if (current_depth == 0 || pixel_depth[i] < current_depth)
             {
-                current_depth = depth;
+                current_depth = pixel_depth[i];
             }
           }
         }

@@ -332,6 +332,13 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
         }
     }
 
+    if (!gaussians->is_init_)  // stopped before the first keyframe
+    {
+        std::cout << "\n\n😋 Gaussian-LIC got no keyframe: no map to save.\n\n\n";
+        rclcpp::shutdown();
+        return;
+    }
+
     /// [6] evaluation
     std::cout << "\n     🎉 Runtime Statistics 🎉\n";
     std::cout << std::fixed << std::setprecision(2) << "\n        [Total Mapping Time] " << total_mapping_time << "s" << std::endl;
@@ -346,8 +353,11 @@ void mapping(const YAML::Node& node, const std::string& result_path, const std::
     gaussians->saveMap(result_path);
     publishGaussianMap(viz, gaussians);
     publishSplats(viz, gaussians);
-    viz.map->wait_for_all_acked(std::chrono::seconds(5));
-    viz.splats->wait_for_all_acked(std::chrono::seconds(10));
+    if (rclcpp::ok())  // after Ctrl-C nothing is delivered any more
+    {
+        viz.map->wait_for_all_acked(std::chrono::seconds(5));
+        viz.splats->wait_for_all_acked(std::chrono::seconds(10));
+    }
 
     std::cout << "\n\n😋 Gaussian-LIC Done!\n\n\n";
     rclcpp::shutdown();  // results are saved: stop spinning so the node exits on its own
@@ -381,12 +391,16 @@ int main(int argc, char** argv)
         while (!exit_flag) 
         {
             double now = steadyNow();
-            if (gaussians_initialized && (now - last_point_time > 5.0)) 
+            if (gaussians_initialized && (now - last_point_time > 5.0))
             {
                 m_buf.lock();
                 if (point_buf.empty()) exit_flag = true;
                 m_buf.unlock();
-            } 
+            }
+            else if (!gaussians_initialized && !rclcpp::ok())  // Ctrl-C before the first keyframe
+            {
+                exit_flag = true;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
     });

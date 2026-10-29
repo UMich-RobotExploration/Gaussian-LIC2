@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-# A simple GUI for Gaussian-LIC on payload recordings, in the browser (viser): pick a ROS 2 bag, watch the coloured
-# point cloud of the map grow while it is processed (/gaussian_lic/map, as in RViz2), and look at the Gaussian splat
-# map once Gaussian-LIC has saved it.
+# A simple GUI for Gaussian-LIC on the payload, in the browser (viser): pick a ROS 2 bag or the live topics, watch the
+# coloured point cloud of the map grow while it is processed (/gaussian_lic/map, as in RViz2), and look at the Gaussian
+# splat map once Gaussian-LIC has saved it.
 #
 #   ros2 launch gaussian_lic gui.launch.xml        then open http://localhost:8080
 #
-# Recordings with raw Ouster packets run as they are, Coco-LIC decodes them. Runs with a Python that has viser
-# installed, see README.
+# Raw Ouster packets work as they are, Coco-LIC decodes them. Runs with a Python that has viser installed, see README.
 
 import collections
 import glob
@@ -28,14 +27,17 @@ from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs_py import point_cloud2
+from std_srvs.srv import Trigger
 
 from splat_viewer import quat_wxyz_to_matrix, read_ply, splat_covariances, view_behind_camera
 
 INSTRUCTIONS = '''
-1. Put your recordings (ROS 2 bag folders or `.mcap` files) in the folder below and click **Refresh**.
-2. Pick a recording and click **Start**.
-3. The coloured point cloud of the map builds up while the recording is processed. At the end Gaussian-LIC saves
-   its map, which takes a minute or two, and the Gaussian splats appear.
+1. Pick the source: a **recording** (ROS 2 bag folders or `.mcap` files in the folder below, click **Refresh** after
+   adding some), or the **live topics** of the payload as they are published.
+2. Click **Start**.
+3. The coloured point cloud of the map builds up while the data is processed. A recording ends by itself; click
+   **Finish** to end a live run, or to stop a recording early. Gaussian-LIC then saves its map, which takes a minute
+   or two, and the Gaussian splats appear. **Stop** ends a run without saving.
 
 Drag to rotate, right-drag to move, scroll to zoom.
 '''
@@ -83,6 +85,27 @@ def load_bag(path):
         return None
 
 
+class LiveTopics:
+    """The payload's sensor topics as they are published, instead of a recording"""
+    name, start_ns, duration = 'the live topics', None, None
+
+
+def missing_live_topics(node):
+    """The payload's sensors that are not published now, by the topics Coco-LIC reads (payload configs)"""
+    def published(*topics):
+        return all(node.count_publishers(topic) > 0 for topic in topics)
+    missing = []
+    if not (published('/camera/left/image_raw') or published('/camera/left/image_raw/compressed')):
+        missing.append('the camera (`/camera/left/image_raw`)')
+    points = published('/ouster/points')
+    packets = not points and published('/ouster/lidar_packets', '/ouster/metadata')
+    if not (points or packets):
+        missing.append('the LiDAR (`/ouster/points`, or `/ouster/lidar_packets` and `/ouster/metadata`)')
+    if not (published('/ouster/imu') or (packets and published('/ouster/imu_packets'))):
+        missing.append('the IMU (`/ouster/imu`, or `/ouster/imu_packets` with the packets)')
+    return missing
+
+
 def find_bags(folder):
     """The usable recordings directly in folder, newest first"""
     bags = []
@@ -123,6 +146,7 @@ class Gui(Node):
         self.stage, self.stage_time, self.message, self.folder_note, self.run_bag = 'idle', time.time(), '', '', None
         self.stopping, self.stop_reason, self.failure, self.psnr, self.coco_done, self.keyframes = \
             False, None, None, None, None, 0
+        self.finishing, self.waiting_for, self.live_missing = False, None, []
         self.log, self.log_shown = collections.deque(maxlen=300), None
         self.cloud, self.splats, self.trajectory_handle, self.frustum = None, None, None, None
         self.reset_run()
@@ -132,11 +156,15 @@ class Gui(Node):
         gui = self.server.gui
         gui.configure_theme(control_width='large', show_share_button=False)
         gui.add_markdown('## Gaussian-LIC\n' + INSTRUCTIONS)
+        self.source = gui.add_dropdown('Source', ('Recording', 'Live topics'))
         self.folder = gui.add_text('Recordings folder', folder)
         self.refresh_button = gui.add_button('Refresh', icon=viser.Icon.REFRESH)
         self.recording = gui.add_dropdown('Recording', ('none found',), disabled=True)
         self.start_button = gui.add_button('Start', color='green', icon=viser.Icon.PLAYER_PLAY)
-        self.stop_button = gui.add_button('Stop', color='red', icon=viser.Icon.PLAYER_STOP, visible=False)
+        self.finish_button = gui.add_button('Finish', color='green', icon=viser.Icon.PLAYER_TRACK_NEXT, visible=False,
+                                            hint='stop reading and save the map so far')
+        self.stop_button = gui.add_button('Stop', color='red', icon=viser.Icon.PLAYER_STOP, visible=False,
+                                          hint='end the run without saving a map')
         self.status = gui.add_markdown('')
         self.progress = gui.add_progress_bar(0, visible=False)
         with gui.add_folder('View'):
@@ -147,8 +175,10 @@ class Gui(Node):
         with gui.add_folder('Log', expand_by_default=False):
             self.log_text = gui.add_markdown('')
 
+        self.source.on_update(lambda _: self.refresh())
         self.refresh_button.on_click(lambda _: self.refresh())
         self.start_button.on_click(lambda _: self.start())
+        self.finish_button.on_click(lambda _: self.finish_run())
         self.stop_button.on_click(lambda _: self.stop())
         self.last_button.on_click(lambda _: self.load_result())
         self.show_cloud.on_update(lambda _: self.set_visible(cloud=self.show_cloud.value))
@@ -158,6 +188,7 @@ class Gui(Node):
         self.create_subscription(PointCloud2, '/gaussian_lic/map', self.on_map,
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(PoseStamped, '/pose_for_gs', self.on_pose, 100)
+        self.finish_client = self.create_client(Trigger, '/cocolic/finish')
         self.create_timer(0.5, self.update)
         self.get_logger().info(f'Gaussian-LIC GUI: open http://localhost:{port} in a browser')
         if self.declare_parameter('open_browser', True).value:
@@ -165,7 +196,13 @@ class Gui(Node):
 
     # ---- recordings and runs
 
+    def live(self):
+        return self.source.value == 'Live topics'
+
     def refresh(self):
+        live = self.live()
+        for handle in (self.folder, self.refresh_button, self.recording):
+            handle.visible = not live
         try:
             bags = find_bags(os.path.expanduser(self.folder.value))
         except OSError as e:
@@ -176,37 +213,51 @@ class Gui(Node):
         previous = self.recording.value
         self.recording.options = tuple(self.bags) or ('none found',)
         self.recording.value = previous if previous in self.bags else self.recording.options[0]
-        self.recording.disabled = self.start_button.disabled = not self.bags
+        self.recording.disabled = not self.bags
+        self.start_button.disabled = not live and not self.bags
         self.last_button.disabled = not os.path.isfile(os.path.join(self.result_path, 'point_cloud.ply'))
 
     def start(self):
-        bag = self.bags.get(self.recording.value)
+        bag = LiveTopics() if self.live() else self.bags.get(self.recording.value)
         with self.lock:
             if bag is None or self.worker is not None:
                 return
             self.stopping, self.stop_reason, self.failure, self.psnr, self.coco_done, self.keyframes = \
                 False, None, None, None, None, 0
+            self.finishing, self.waiting_for = False, None  # None: Coco-LIC is not up yet, []: it reads the topics
             self.worker = threading.Thread(target=self.run, args=(bag,), daemon=True)
-        for handle in (self.start_button, self.refresh_button, self.recording, self.last_button):
+        for handle in (self.source, self.start_button, self.refresh_button, self.recording, self.last_button):
             handle.disabled = True
         self.start_button.visible, self.stop_button.visible, self.stop_button.disabled = False, True, False
+        self.finish_button.visible, self.finish_button.disabled = True, True  # until Coco-LIC is up
         self.worker.start()
+
+    def finish_run(self):
+        """Coco-LIC stops reading as at the end of a recording, then Gaussian-LIC saves its map"""
+        with self.lock:
+            if self.worker is None or self.stopping or self.finishing:
+                return
+            self.finishing = True
+        self.finish_button.disabled = True
+        self.finish_client.call_async(Trigger.Request())
 
     def stop(self, reason=None):
         with self.lock:
             if self.worker is None or self.stopping:
                 return
             self.stopping, self.stop_reason, proc = True, reason, self.proc
-        self.stop_button.disabled = True
-        if proc is not None:
-            threading.Thread(target=terminate, args=(proc, 40), daemon=True).start()
+        self.stop_button.disabled = self.finish_button.disabled = True
+        if proc is not None:  # a live run would save its map on Ctrl-C (payload.launch.xml), Stop does not wait for it
+            threading.Thread(target=terminate, args=(proc, 15 if isinstance(self.run_bag, LiveTopics) else 40),
+                             daemon=True).start()
 
     def run(self, bag):
         try:
             self.reset_scene()
             self.set_stage('starting', bag)
             started = time.time()
-            self.execute(['ros2', 'launch', 'gaussian_lic', 'payload.launch.xml', f'bag_path:={bag.uri}',
+            source = [] if isinstance(bag, LiveTopics) else [f'bag_path:={bag.uri}']
+            self.execute(['ros2', 'launch', 'gaussian_lic', 'payload.launch.xml', *source,
                           'rviz:=false', 'viewer:=false', f'result_path:={self.result_path}'])
             if self.stopping:
                 return self.finish_stopped()
@@ -248,6 +299,10 @@ class Gui(Node):
             self.psnr = m.group(1)
         elif 'All Done.' in line:  # Coco-LIC is through the recording
             self.coco_done = time.time()
+        elif m := re.search(r'Live: waiting for (.*)', line):
+            self.waiting_for = m.group(1).split()
+        elif 'Live: reading' in line:
+            self.waiting_for = []
         elif 'process has died' in line:
             self.failure = 'A node crashed: ' + line.split(']: ')[0].split('[')[-1]
             if 'odometry_node' in line:  # Gaussian-LIC gets no more data: let update() stop it if it never started
@@ -261,8 +316,8 @@ class Gui(Node):
     def finish(self, stage, message):
         with self.lock:
             self.stage, self.message, self.worker = stage, message, None
-        self.start_button.visible, self.stop_button.visible = True, False
-        self.refresh_button.disabled = False
+        self.start_button.visible, self.stop_button.visible, self.finish_button.visible = True, False, False
+        self.refresh_button.disabled = self.source.disabled = False
         self.refresh()
 
     def finish_stopped(self):
@@ -285,6 +340,7 @@ class Gui(Node):
     def reset_run(self):
         self.map_msg, self.map_time, self.n_points, self.extent = None, 0.0, 0, None
         self.trajectory, self.first_pose, self.data_time, self.view_set, self.drawn = [], None, None, False, 0
+        self.first_stamp_ns = None
 
     def reset_scene(self):
         with self.lock:
@@ -316,11 +372,11 @@ class Gui(Node):
         stamp_ns = msg.header.stamp.sec * 10**9 + msg.header.stamp.nanosec
         with self.lock:
             if self.first_pose is None:
-                self.first_pose = pose
+                self.first_pose, self.first_stamp_ns = pose, stamp_ns
             self.trajectory.append(pose[0])
             self.latest_wxyz = pose[1]
-            if self.run_bag is not None:
-                self.data_time = (stamp_ns - self.run_bag.start_ns) / 1e9
+            if self.run_bag is not None:  # live: from the first pose
+                self.data_time = (stamp_ns - (self.run_bag.start_ns or self.first_stamp_ns)) / 1e9
 
     def draw_cloud(self, msg):
         """The Gaussian centres in their base colour, as RViz2 shows /gaussian_lic/map"""
@@ -391,22 +447,36 @@ class Gui(Node):
             self.set_stage('mapping')
             stage = 'mapping'
         if stage in ('starting', 'mapping') and self.coco_done and not self.keyframes \
-                and time.time() - self.coco_done > 30:
-            self.stop('Coco-LIC went through the recording without Gaussian-LIC getting a frame: '
+                and time.time() - self.coco_done > (5 if self.finishing else 30):
+            self.stop('Finished before Gaussian-LIC got a frame: no map to save.' if self.finishing else
+                      'Coco-LIC went through the recording without Gaussian-LIC getting a frame: '
                       'Coco-LIC most likely did not initialise, see the log.')
+        if self.worker is not None and not self.finishing and not self.stopping:
+            self.finish_button.disabled = self.coco_done is not None or not self.finish_client.service_is_ready()
+        if stage not in ('starting', 'mapping', 'finishing') and self.live():
+            self.live_missing = missing_live_topics(self)
         self.show_status(stage, bag)
 
     def show_status(self, stage, bag):
         elapsed, progress, animated = time.time() - self.stage_time, None, False
+        live = isinstance(bag, LiveTopics)
         if self.stopping and self.worker is not None:
             text, progress, animated = 'Stopping ...', 100, True
+        elif self.finishing and stage in ('starting', 'mapping'):
+            text, progress, animated = ('**Finishing**: Coco-LIC stops reading, then Gaussian-LIC saves its map ...',
+                                        100, True)
+        elif stage == 'starting' and self.waiting_for:
+            text, progress, animated = ('**Waiting** for ' + ', '.join(f'`{t}`' for t in self.waiting_for) +
+                                        ' to be published ...'), 100, True
         elif stage == 'starting':
-            text, progress, animated = '**Starting** Coco-LIC and Gaussian-LIC ...', 100, True
+            text = ('**Reading the live topics**: the map appears once Coco-LIC has initialised ...'
+                    if self.waiting_for == [] else '**Starting** Coco-LIC and Gaussian-LIC ...')
+            progress, animated = 100, True
         elif stage == 'mapping':
             t = max(self.data_time or 0.0, 0.0)
-            text = (f'**Mapping** {bag.name}: {t:.0f} of {bag.duration:.0f} s, '
-                    f'{self.n_points / 1e6:.2f}M points in the map, {self.keyframes} keyframes')
-            progress = 100 * t / bag.duration
+            text = (f'**Mapping** {bag.name}: {t:.0f}' + (' s' if live else f' of {bag.duration:.0f} s') +
+                    f', {self.n_points / 1e6:.2f}M points in the map, {self.keyframes} keyframes')
+            progress, animated = (100, True) if live else (100 * t / bag.duration, False)
         elif stage == 'finishing':
             text, progress, animated = ('**Saving the Gaussian map**: Gaussian-LIC renders every frame to '
                                         f'evaluate it ({elapsed:.0f} s, takes a minute or two)'), 100, True
@@ -414,6 +484,9 @@ class Gui(Node):
             text = f'**Failed**: {self.message}'
         elif stage in ('done', 'stopped'):
             text = self.message
+        elif self.live():
+            text = ('Not published now: ' + '; '.join(self.live_missing) + '. Coco-LIC waits for them after **Start**.'
+                    if self.live_missing else 'All sensors are published: click **Start**.')
         else:
             text = self.folder_note or 'Pick a recording and click **Start**.'
         if self.status.content != text:

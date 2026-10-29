@@ -53,6 +53,8 @@ namespace cocolic
 
     void RunInSubscribeMode();
 
+    bool IsInitialized() const { return is_initialized_; }
+
     double SaveOdometry();
 
     // block until the Gaussian-LIC data has reached its subscribers, before the process exits

@@ -41,8 +41,16 @@ int main(int argc, char **argv) {
   OdometryManager odom_manager(config_node, nh);
   odom_manager.RunBag();
 
-  double t_traj_max = odom_manager.SaveOdometry();
-  odom_manager.WaitForPublishedData();
+  if (odom_manager.IsInitialized())
+  {
+    double t_traj_max = odom_manager.SaveOdometry();
+    if (rclcpp::ok())  // after Ctrl-C, Gaussian-LIC takes no more data
+      odom_manager.WaitForPublishedData();
+  }
+  else
+  {
+    std::cout << "\n🍺 Stopped before the initialization: no trajectory to save.\n";
+  }
   std::cout << "\n✨ All Done.\n\n";
 
   rclcpp::shutdown();

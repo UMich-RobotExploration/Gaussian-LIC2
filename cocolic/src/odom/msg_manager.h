@@ -32,11 +32,18 @@
 #include <geometry_msgs/msg/point_stamped.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <cv_bridge/cv_bridge.hpp>
 
 #include <Eigen/Dense>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <map>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include <lidar/livox_feature_extraction.h>
@@ -202,9 +209,12 @@ namespace cocolic
     typedef std::shared_ptr<MsgManager> Ptr;
 
     MsgManager(const YAML::Node &node, const std::string &config_path, const rclcpp::Node::SharedPtr &nh);
+    ~MsgManager();
 
-    // 
-    void SpinBagOnce();
+    // handle the next message of the bag, or of the live topics (waits up to 0.1 s for one); false if there was none
+    bool SpinOnce();
+
+    bool IsLive() const { return live_; }
 
     // 
     bool GetMsgs(NextMsgs &msgs, int64_t traj_last_max, int64_t traj_max, int64_t start_time);
@@ -268,7 +278,13 @@ namespace cocolic
 
   private:
     void LoadBag(const YAML::Node &node);
-    void SetupOusterDecoder(const rosbag2_storage::BagMetadata &metadata, std::vector<std::string> &topics);
+    void SpinBagOnce();
+    // live: waits until every sensor is published, then subscribes to the same topics a bag would be read for
+    void SubscribeLive(const rclcpp::Node::SharedPtr &nh);
+    bool SpinLiveOnce();
+    void SetupOusterDecoder(const std::function<bool(const std::string &)> &has_topic,
+                            std::vector<std::string> &topics);
+    void HandleMsg(const std::string &msg_topic, const rclcpp::SerializedMessage &serialized_msg, double msg_time);
 
     bool HasEnvMsg() const;
 
@@ -359,18 +375,38 @@ namespace cocolic
     Eigen::aligned_vector<Eigen::Matrix4d> T_LktoL0_vec_;
 
     std::unique_ptr<rosbag2_cpp::Reader> bag_reader_;
-    std::map<std::string, std::string> bag_topic_types_;
+    std::map<std::string, std::string> topic_types_;  // of the topics read, from the bag or the publishers
     int64_t bag_time_finish_;  // [ns] bag receive time
 
-    // an Ouster recorded as raw packets: decoded here instead of read from lidar_topics_[ouster_lidar_idx_] / imu_topic_
+    // an Ouster published as raw packets: decoded here instead of read from lidar_topics_[ouster_lidar_idx_] / imu_topic_
     std::unique_ptr<OusterPacketDecoder> ouster_decoder_;
-    std::string ouster_lidar_packets_topic_, ouster_imu_packets_topic_;
+    std::string ouster_metadata_topic_, ouster_lidar_packets_topic_, ouster_imu_packets_topic_;
     int ouster_lidar_idx_ = -1;
 
-    rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
-    std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> subs_vlp16_;
-    std::vector<rclcpp::Subscription<cocolic::msg::LivoxCustomMsg>::SharedPtr> subs_livox_;
-    rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr sub_image_;
+    // /cocolic/finish ends the run early, like the end of the bag; it and the live topics are handled in this thread
+    rclcpp::CallbackGroup::SharedPtr callback_group_;
+    std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
+    std::thread executor_thread_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr finish_service_;
+    std::atomic<bool> finish_requested_{false};
+
+    // live topics: received messages wait here for the odometry, which takes them one at a time as from a bag
+    struct LiveMsg
+    {
+      std::string topic;
+      std::shared_ptr<const rclcpp::SerializedMessage> data;
+      bool is_image;
+      double recv_time;  // [s] system clock
+    };
+    bool live_ = false;
+    double live_timeout_;  // [s] finish once nothing arrived for this long, <= 0: only on /cocolic/finish
+    std::mutex live_mutex_;
+    std::condition_variable live_cond_;
+    std::deque<LiveMsg> live_queue_;
+    int live_queued_images_ = 0;  // images are dropped beyond a second of backlog, the rest is never dropped
+    int live_dropped_images_ = 0;
+    std::chrono::steady_clock::time_point live_last_arrival_, live_last_warning_;
+    std::vector<rclcpp::GenericSubscription::SharedPtr> live_subs_;
 
     VelodyneFeatureExtraction::Ptr velodyne_feature_extraction_;
     LivoxFeatureExtraction::Ptr livox_feature_extraction_;
