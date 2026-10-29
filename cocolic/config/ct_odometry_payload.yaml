@@ -4,9 +4,9 @@ lidar_yaml: /payload/lidar.yaml
 imu_yaml: /payload/imu.yaml
 camera_yaml: /payload/camera.yaml
 
-# a bag re-recorded after replaying the Ouster packets through ouster-ros,
-# with /ouster/points, /ouster/imu and /camera/left/image_raw; set with bag_path:=... when launching
-bag_path: /path/to/payload_bag_replayed
+# a payload recording with /camera/left/image_raw and either the raw Ouster packets (/ouster/lidar_packets,
+# /ouster/imu_packets, /ouster/metadata) or /ouster/points and /ouster/imu; set with bag_path:=... when launching
+bag_path: /path/to/payload_bag
 bag_start: 0.
 bag_durr: -1
 

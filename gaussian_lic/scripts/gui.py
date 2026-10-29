@@ -5,14 +5,13 @@
 #
 #   ros2 launch gaussian_lic gui.launch.xml        then open http://localhost:8080
 #
-# Recordings with raw Ouster packets are converted first (replay_ouster_bag.py), into <name>_replayed next to them,
-# which later runs reuse. Runs with a Python that has viser installed, see README.
+# Recordings with raw Ouster packets run as they are, Coco-LIC decodes them. Runs with a Python that has viser
+# installed, see README.
 
 import collections
 import glob
 import os
 import re
-import shutil
 import signal
 import subprocess
 import threading
@@ -34,8 +33,7 @@ from splat_viewer import quat_wxyz_to_matrix, read_ply, splat_covariances, view_
 
 INSTRUCTIONS = '''
 1. Put your recordings (ROS 2 bag folders or `.mcap` files) in the folder below and click **Refresh**.
-2. Pick a recording and click **Start**. Recordings with raw Ouster packets are converted first, into a copy
-   named `<name>_replayed` next to them (once, this takes as long as the recording).
+2. Pick a recording and click **Start**.
 3. The coloured point cloud of the map builds up while the recording is processed. At the end Gaussian-LIC saves
    its map, which takes a minute or two, and the Gaussian splats appear.
 
@@ -60,28 +58,21 @@ def bag_uri(path):
 
 
 class Bag:
-    """A recording: kind is 'ready' (has /ouster/points), 'raw' (Ouster packets, converted first) or None (unusable)"""
+    """A recording: kind is 'points' (/ouster/points), 'packets' (raw Ouster packets) or None (unusable)"""
 
     def __init__(self, path, uri, metadata):
         self.name, self.uri = os.path.basename(path), uri
-        self.converted = re.sub(r'\.mcap$', '', path) + '_replayed'
         self.start_ns, self.duration = metadata.starting_time.nanoseconds, metadata.duration.nanoseconds / 1e9
         topics = {t.topic_metadata.name: t.message_count for t in metadata.topics_with_message_count}
         self.kind = None
         if topics.get('/camera/left/image_raw'):
             if topics.get('/ouster/points') and topics.get('/ouster/imu'):
-                self.kind = 'ready'
-            elif topics.get('/ouster/lidar_packets'):
-                self.kind = 'raw'
+                self.kind = 'points'
+            elif topics.get('/ouster/lidar_packets') and topics.get('/ouster/metadata'):
+                self.kind = 'packets'
 
     def label(self):
-        if self.kind == 'ready':
-            what = 'ready'
-        elif getattr(load_bag(self.converted), 'kind', None) == 'ready':
-            what = f'uses {os.path.basename(self.converted)}'
-        else:
-            what = 'raw Ouster packets, converted first'
-        return f'{self.name}  ({self.duration:.0f} s, {what})'
+        return f'{self.name}  ({self.duration:.0f} s)'
 
 
 def load_bag(path):
@@ -212,21 +203,6 @@ class Gui(Node):
 
     def run(self, bag):
         try:
-            if bag.kind == 'raw':
-                converted = load_bag(bag.converted)
-                if getattr(converted, 'kind', None) != 'ready':
-                    if os.path.exists(bag.converted):
-                        return self.finish('failed', f'`{bag.converted}` exists but is not a converted recording: '
-                                                     'delete it and start again.')
-                    self.set_stage('converting', bag)
-                    code = self.execute(['ros2', 'run', 'gaussian_lic', 'replay_ouster_bag.py', bag.uri, bag.converted])
-                    converted = load_bag(bag.converted) if code == 0 and not self.stopping else None
-                    if getattr(converted, 'kind', None) != 'ready':
-                        shutil.rmtree(bag.converted, ignore_errors=True)  # the partial copy made by this run
-                        return self.finish_stopped() if self.stopping else \
-                            self.finish('failed', 'Converting the recording failed, see the log.')
-                bag = converted
-
             self.reset_scene()
             self.set_stage('starting', bag)
             started = time.time()
@@ -274,6 +250,8 @@ class Gui(Node):
             self.coco_done = time.time()
         elif 'process has died' in line:
             self.failure = 'A node crashed: ' + line.split(']: ')[0].split('[')[-1]
+            if 'odometry_node' in line:  # Gaussian-LIC gets no more data: let update() stop it if it never started
+                self.coco_done = time.time()
 
     def set_stage(self, stage, bag=None):
         with self.lock:
@@ -422,10 +400,6 @@ class Gui(Node):
         elapsed, progress, animated = time.time() - self.stage_time, None, False
         if self.stopping and self.worker is not None:
             text, progress, animated = 'Stopping ...', 100, True
-        elif stage == 'converting':
-            expected = bag.duration + 10  # the recording is replayed in real time
-            text, progress = (f'**Converting** the Ouster packets of {bag.name}: '
-                              f'{elapsed:.0f} of about {expected:.0f} s'), 100 * elapsed / expected
         elif stage == 'starting':
             text, progress, animated = '**Starting** Coco-LIC and Gaussian-LIC ...', 100, True
         elif stage == 'mapping':

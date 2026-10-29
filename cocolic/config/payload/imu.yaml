@@ -1,4 +1,4 @@
-imu_topic:  /ouster/imu  # Ouster built-in IMU, published when /ouster/imu_packets is replayed through ouster-ros
+imu_topic:  /ouster/imu  # Ouster built-in IMU as ouster-ros publishes it; bags with only /ouster/imu_packets are decoded
 
 # gravity and IMU biases are initialised from the mean of the first 1 s of IMU data, accepted when the accel std
 # over that second is below this. A still start gives ~0.03; walking with the rig from the first sample ~6

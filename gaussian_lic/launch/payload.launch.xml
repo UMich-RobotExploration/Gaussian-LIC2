@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
-<!-- Gaussian-LIC + Coco-LIC on a replayed payload bag, e.g. bag_path:=$HOME/payload_20261027_132644_replayed -->
+<!-- Gaussian-LIC + Coco-LIC on a payload recording, e.g. bag_path:=$HOME/payload_20261027_132644 -->
 <launch>
-  <arg name="bag_path"          description="ROS 2 bag with /ouster/points, /ouster/imu and /camera/left/image_raw" />
+  <arg name="bag_path"          description="ROS 2 bag (folder or .mcap) with /camera/left/image_raw and the raw Ouster packets or /ouster/points + /ouster/imu" />
   <arg name="config_path"       default="config/payload.yaml" />
   <arg name="result_path"       default="$(find-pkg-share gaussian_lic)/result" description="renders, metrics and point_cloud.ply; replaced on every run" />
   <arg name="rviz"              default="true" />

@@ -53,7 +53,7 @@ For recordings from the Ouster + camera payload (ROS 2 bags). Needs Ubuntu with 
    docker/gui.sh
    ```
 
-5. Pick a recording (bags in your home folder, newest first; `docker/gui.sh bag_folder:=<folder>` for another folder) and click **Start**. Recordings with raw Ouster packets are converted first. The coloured point cloud builds up while it runs, and the Gaussian splats appear at the end. Results are saved in `~/gaussian_lic_result`. Press Ctrl-C in the terminal to quit.
+5. Pick a recording (bags in your home folder, newest first; `docker/gui.sh bag_folder:=<folder>` for another folder) and click **Start**. The coloured point cloud builds up while it runs, and the Gaussian splats appear at the end. Results are saved in `~/gaussian_lic_result`. Press Ctrl-C in the terminal to quit.
 
 Gaussian-LIC2 is a photo-realistic LiDAR-Inertial-Camera Gaussian Splatting SLAM system, which simultaneously performs robust, accurate pose estimation and constructs a photo-realistic 3D Gaussian map in real time.
 
@@ -181,8 +181,7 @@ docker build -t gaussian-lic -f docker/Dockerfile .
 
 ```shell
 docker/gui.sh  # the GUI, opens in your browser, see Own Data
-docker/run.sh ros2 run gaussian_lic replay_ouster_bag.py ~/<recording> ~/<recording>_replayed
-docker/run.sh ros2 launch gaussian_lic payload.launch.xml bag_path:=$HOME/<recording>_replayed
+docker/run.sh ros2 launch gaussian_lic payload.launch.xml bag_path:=$HOME/<recording>
 docker/run.sh ros2 launch gaussian_lic view_map.launch.xml
 ```
 
@@ -220,22 +219,20 @@ Quick start on the sequence CBD_Building_01 in the FAST-LIVO2 dataset.
 
 ### Own Data: Ouster + Camera Rig
 
-The easiest way in is the GUI in the browser, `docker/gui.sh` (or `ros2 launch gaussian_lic gui.launch.xml` without Docker), which opens http://localhost:8080 in your default browser. It lists the recordings in your home folder (`bag_folder:=<dir>` for another one, or change it on the page), newest first. Pick one and click **Start**: a recording with raw Ouster packets is converted first, as below, into `<name>_replayed` next to it, which later runs reuse. While the recording is processed, the coloured point cloud of the map builds up live, the same as in RViz2 (`/gaussian_lic/map`, the Gaussian centres in their colour), with the camera trajectory. When Gaussian-LIC has saved its map, the page shows the Gaussian splats and the novel-view PSNR. **Show the last result** loads the map of the latest run again. The page runs the same `payload.launch.xml` as below, without RViz2.
+The easiest way in is the GUI in the browser, `docker/gui.sh` (or `ros2 launch gaussian_lic gui.launch.xml` without Docker), which opens http://localhost:8080 in your default browser. It lists the recordings in your home folder (`bag_folder:=<dir>` for another one, or change it on the page), newest first. Pick one and click **Start**. While the recording is processed, the coloured point cloud of the map builds up live, the same as in RViz2 (`/gaussian_lic/map`, the Gaussian centres in their colour), with the camera trajectory. When Gaussian-LIC has saved its map, the page shows the Gaussian splats and the novel-view PSNR. **Show the last result** loads the map of the latest run again. The page runs the same `payload.launch.xml` as below, without RViz2.
 
-`cocolic/config/ct_odometry_payload.yaml` (with `cocolic/config/payload/`) and `gaussian_lic/config/payload.yaml` are a working setup for an Ouster OS-DOME-128 with its built-in IMU and a 2880x1860 camera. Coco-LIC tracks the camera on a 640x480 crop of it (`image_crop` / `image_resize` in `payload/camera.yaml`), Gaussian-LIC maps at the native resolution, 2880x1856 (`gs_image_crop` / `gs_cam_*` in `payload/camera.yaml`, image sizes must be multiples of 32). That needs its own depth completion engine, `./build_trt.sh 1856x2880` in `gaussian_lic/ckpt`, and about 9 GB of RAM for a 30 s recording (17 GB for 60 s) and 10 GB of GPU memory. A bag recorded with the Ouster raw packets has to be replayed through [ouster-ros](https://github.com/ouster-lidar/ouster-ros) first, so that it contains `/ouster/points` and `/ouster/imu`:
+`cocolic/config/ct_odometry_payload.yaml` (with `cocolic/config/payload/`) and `gaussian_lic/config/payload.yaml` are a working setup for an Ouster OS-DOME-128 with its built-in IMU and a 2880x1860 camera. Coco-LIC tracks the camera on a 640x480 crop of it (`image_crop` / `image_resize` in `payload/camera.yaml`), Gaussian-LIC maps at the native resolution, 2880x1856 (`gs_image_crop` / `gs_cam_*` in `payload/camera.yaml`, image sizes must be multiples of 32). That needs its own depth completion engine, `./build_trt.sh 1856x2880` in `gaussian_lic/ckpt`, and about 9 GB of RAM for a 30 s recording (17 GB for 60 s) and 10 GB of GPU memory.
 
-```shell
-ros2 run gaussian_lic replay_ouster_bag.py <bag> <bag>_replayed
-```
+Recordings with the raw Ouster packets (`/ouster/lidar_packets`, `/ouster/imu_packets`, `/ouster/metadata`) are used as they are: when a bag has no `/ouster/points`, Coco-LIC decodes the packets itself with the Ouster SDK of [ouster-ros](https://github.com/ouster-lidar/ouster-ros) (`cocolic/src/lidar/ouster_packet_decoder.cpp`), into the same clouds and IMU messages the driver publishes (checked point by point against it). Unlike a replay through the driver, nothing is dropped and it runs at full speed. IMU measurements from before the first LiDAR packet are skipped: the sensor sends several seconds of them in a burst when a recording starts. Bags with `/ouster/points` and `/ouster/imu`, e.g. recorded from the running driver, work too. `ros2 run gaussian_lic replay_ouster_bag.py <bag> <bag>_replayed` still converts a recording through the driver if you want such a bag.
 
-`<bag>` is the bag directory, or a single `.mcap` file of it when its `metadata.yaml` lists files that are missing. The script plays the packets, camera and VN100 topics in real time through the driver, records the result, and prints how many scans it got against how many the packets hold. It hands the driver the sensor metadata once, from a file: a bag that re-publishes `/ouster/metadata` would make the driver restart its scan assembly every time and drop most scans.
+`<bag>` is the bag directory, or a single `.mcap` file of it when its `metadata.yaml` lists files that are missing.
 
 Coco-LIC initialises gravity and the IMU biases from the first second of IMU data. A still start is best, but walking with the rig from the start works too, see `imu_excite_threshold` in `payload/imu.yaml`.
 
 Then run both Gaussian-LIC and Coco-LIC on it with one command:
 
 ```shell
-ros2 launch gaussian_lic payload.launch.xml bag_path:=<bag>_replayed
+ros2 launch gaussian_lic payload.launch.xml bag_path:=<bag>
 ```
 
 This also opens

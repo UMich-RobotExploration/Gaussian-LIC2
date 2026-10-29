@@ -40,6 +40,7 @@
 #include <vector>
 
 #include <lidar/livox_feature_extraction.h>
+#include <lidar/ouster_packet_decoder.h>
 #include <lidar/velodyne_feature_extraction.h>
 
 #include <utils/log_utils.h>
@@ -267,6 +268,7 @@ namespace cocolic
 
   private:
     void LoadBag(const YAML::Node &node);
+    void SetupOusterDecoder(const rosbag2_storage::BagMetadata &metadata, std::vector<std::string> &topics);
 
     bool HasEnvMsg() const;
 
@@ -359,6 +361,11 @@ namespace cocolic
     std::unique_ptr<rosbag2_cpp::Reader> bag_reader_;
     std::map<std::string, std::string> bag_topic_types_;
     int64_t bag_time_finish_;  // [ns] bag receive time
+
+    // an Ouster recorded as raw packets: decoded here instead of read from lidar_topics_[ouster_lidar_idx_] / imu_topic_
+    std::unique_ptr<OusterPacketDecoder> ouster_decoder_;
+    std::string ouster_lidar_packets_topic_, ouster_imu_packets_topic_;
+    int ouster_lidar_idx_ = -1;
 
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
     std::vector<rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr> subs_vlp16_;

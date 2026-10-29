@@ -18,6 +18,10 @@
 
 #include <odom/msg_manager.h>
 #include <utils/parameter_struct.h>
+#include <std_msgs/msg/string.hpp>
+#ifdef COCOLIC_WITH_OUSTER
+#include <ouster_sensor_msgs/msg/packet_msg.hpp>
+#endif
 
 #include <pcl/common/transforms.h>
 
@@ -175,6 +179,7 @@ namespace cocolic
     bag_reader_->open(bag_path_);  // a ROS 2 bag directory, or a single .mcap / .db3 file
 
     const auto &metadata = bag_reader_->get_metadata();
+    SetupOusterDecoder(metadata, topics);
     int64_t bag_begin = metadata.starting_time.time_since_epoch().count();
     int64_t time_start = bag_begin + int64_t(bag_start * S_TO_NS);
     int64_t time_finish = (bag_durr < 0) ? bag_begin + metadata.duration.count()
@@ -207,6 +212,58 @@ namespace cocolic
     //           << " with duration " << (time_finish - time_start).toSec();
   }
 
+  // A rotating lidar topic that is not in the bag, recorded as the raw packets of an Ouster instead (<ns>/lidar_packets
+  // with <ns>/metadata, e.g. /ouster/points -> /ouster/lidar_packets): decode them as ouster-ros would, and the IMU
+  // packets too (<ns>/imu_packets) when the IMU topic is missing as well.
+  void MsgManager::SetupOusterDecoder(const rosbag2_storage::BagMetadata &metadata, std::vector<std::string> &topics)
+  {
+    auto count = [&metadata](const std::string &topic) -> size_t
+    {
+      for (const auto &info : metadata.topics_with_message_count)
+        if (info.topic_metadata.name == topic)
+          return info.message_count;
+      return 0;
+    };
+
+    for (size_t i = 0; i < lidar_topics_.size(); ++i)
+    {
+      const std::string &topic = lidar_topics_[i];
+      const std::string ns = topic.substr(0, topic.rfind('/'));
+      if (lidar_types[i] != VLP || count(topic) > 0 || count(ns + "/lidar_packets") == 0)
+        continue;
+      if (count(ns + "/metadata") == 0)
+      {
+        std::cout << "\n[Error] " << ns << "/lidar_packets without " << ns << "/metadata cannot be decoded.\n";
+        return;
+      }
+#ifdef COCOLIC_WITH_OUSTER
+      rosbag2_cpp::Reader reader;  // the first metadata message; later ones repeat it
+      reader.open(bag_path_);
+      rosbag2_storage::StorageFilter filter;
+      filter.topics = {ns + "/metadata"};
+      reader.set_filter(filter);
+      rclcpp::SerializedMessage serialized_metadata(*reader.read_next()->serialized_data);
+      ouster_decoder_ = std::make_unique<OusterPacketDecoder>(
+          DeserializeMsg<std_msgs::msg::String>(serialized_metadata)->data);
+
+      ouster_lidar_idx_ = i;
+      ouster_lidar_packets_topic_ = ns + "/lidar_packets";
+      topics.push_back(ouster_lidar_packets_topic_);
+      if (count(imu_topic_) == 0 && count(ns + "/imu_packets") > 0 && imu_topic_.rfind(ns + "/", 0) == 0)
+      {
+        ouster_imu_packets_topic_ = ns + "/imu_packets";
+        topics.push_back(ouster_imu_packets_topic_);
+      }
+      std::cout << "\n🍺 No " << topic << " in the bag: decoding " << ouster_lidar_packets_topic_
+                << (ouster_imu_packets_topic_.empty() ? "" : " and " + ouster_imu_packets_topic_) << ".\n";
+#else
+      std::cout << "\n[Error] The bag has " << ns << "/lidar_packets but no " << topic
+                << ": build cocolic with ouster_ros to read raw Ouster packets, or replay them through ouster-ros.\n";
+#endif
+      return;
+    }
+  }
+
   void MsgManager::SpinBagOnce()
   {
     if (!bag_reader_->has_next())
@@ -226,6 +283,26 @@ namespace cocolic
     const std::string &msg_type = bag_topic_types_[msg_topic];
     double msg_time = m->recv_timestamp * NS_TO_S;
     rclcpp::SerializedMessage serialized_msg(*m->serialized_data);
+
+#ifdef COCOLIC_WITH_OUSTER
+    if (ouster_decoder_ && msg_topic == ouster_lidar_packets_topic_)  // raw Ouster packets
+    {
+      auto packet = DeserializeMsg<ouster_sensor_msgs::msg::PacketMsg>(serialized_msg);
+      if (sensor_msgs::msg::PointCloud2::ConstSharedPtr lidar_msg = ouster_decoder_->AddLidarPacket(packet->buf))
+      {
+        CheckLidarMsgTimestamp(msg_time, stampToSec(lidar_msg->header.stamp));
+        VelodyneMsgHandle(lidar_msg, ouster_lidar_idx_);
+      }
+      return;
+    }
+    if (ouster_decoder_ && msg_topic == ouster_imu_packets_topic_)
+    {
+      auto packet = DeserializeMsg<ouster_sensor_msgs::msg::PacketMsg>(serialized_msg);
+      for (const auto &imu : ouster_decoder_->AddImuPacket(packet->buf))
+        IMUMsgHandle(std::make_shared<const sensor_msgs::msg::Imu>(imu));
+      return;
+    }
+#endif
 
     if (msg_topic == imu_topic_)  // imu
     {

@@ -26,6 +26,9 @@ find_package(tf2_eigen REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(rosbag2_cpp REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+# optional: decode bags with raw Ouster packets (/ouster/lidar_packets) directly, see src/lidar/ouster_packet_decoder.h
+find_package(ouster_ros QUIET)
+find_package(ouster_sensor_msgs QUIET)
 
 # FIND_PACKAGE(Boost REQUIRED COMPONENTS thread)
 FIND_PACKAGE(Boost REQUIRED COMPONENTS filesystem iostreams program_options system serialization thread)
@@ -125,6 +128,7 @@ add_executable(odometry_node
    src/odom/odometry_manager.cpp
    src/odom/factor/analytic_diff/marginalization_factor.cpp
    src/utils/parameter_struct.cpp
+   src/lidar/ouster_packet_decoder.cpp
 )
 
 target_link_libraries(odometry_node 
@@ -134,6 +138,14 @@ target_link_libraries(odometry_node
    ${thirdparty_libraries}
   #  fmt::fmt
 )
+if(ouster_ros_FOUND AND ouster_sensor_msgs_FOUND)
+  target_compile_definitions(odometry_node PRIVATE COCOLIC_WITH_OUSTER)
+  target_include_directories(odometry_node PRIVATE ${ouster_ros_INCLUDE_DIRS})
+  target_link_libraries(odometry_node ${ouster_ros_LIBRARIES} ${ouster_sensor_msgs_TARGETS})
+  message(STATUS "cocolic: reads raw Ouster packets with ouster_ros")
+else()
+  message(STATUS "cocolic: ouster_ros not found, bags need /ouster/points (replay the packets through ouster-ros)")
+endif()
 
 install(TARGETS odometry_node DESTINATION lib/${PROJECT_NAME})
 # the node's own libraries, found through LD_LIBRARY_PATH (install/cocolic/lib) once the build folder is gone

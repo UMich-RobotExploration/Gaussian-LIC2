@@ -1,5 +1,5 @@
 lidar0:
-    topic: /ouster/points  # from replaying /ouster/lidar_packets through ouster-ros (point_cloud_frame: os_lidar, organized)
+    topic: /ouster/points  # as ouster-ros publishes it (point_cloud_frame: os_lidar, organized); bags with only /ouster/lidar_packets are decoded
     is_livox: false
     Extrinsics:  # lidar to imu (os_lidar -> os_imu, from the Ouster factory metadata)
         Trans: [0.002441, 0.009725, 0.040291]
