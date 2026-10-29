@@ -1,9 +1,8 @@
-# docker/Dockerfile only needs the two packages, the exported SPNet model and docker/
+# docker/Dockerfile only needs the two packages, the SPNet model (or what makes it) and docker/
 .git
 figure
 **/build
 **/result
 **/__pycache__
-gaussian_lic/ckpt/*
-!gaussian_lic/ckpt/spnet_480_640.onnx
-!gaussian_lic/ckpt/build_trt.sh
+gaussian_lic/ckpt/*.engine
+gaussian_lic/ckpt/spnet_512_640.onnx

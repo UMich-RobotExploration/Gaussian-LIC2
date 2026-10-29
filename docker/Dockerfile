@@ -1,10 +1,21 @@
 # Gaussian-LIC2 + Coco-LIC on ROS 2 Jazzy, with the toolchain they are validated with:
 # CUDA 12.8, LibTorch 2.7.1 (cu128), TensorRT 10.16 and OpenCV 4.12 with CUDA.
 #
-# Build from the repository root (needs gaussian_lic/ckpt/spnet_480_640.onnx, see README):
-#   docker build -t gaussian-lic -f docker/Dockerfile .
-# For a GPU other than an RTX 50xx add --build-arg CUDA_ARCH=<compute capability>, e.g. 8.9 (RTX 40xx), 8.6 (RTX 30xx).
-# Run with docker/run.sh.
+# Build with docker/build.sh, which sets CUDA_ARCH for the GPU of the machine, or from the repository root:
+#   docker build -t gaussian-lic --build-arg CUDA_ARCH=<compute capability, e.g. 8.9 for an RTX 40xx> -f docker/Dockerfile .
+# Run with docker/run.sh or docker/gui.sh.
+
+# SPNet depth completion model as ONNX: gaussian_lic/ckpt/spnet_480_640.onnx if it is there, else exported on the
+# CPU from gaussian_lic/ckpt/Large_300.pth, which export_onnx.sh downloads when it is not there either
+FROM ubuntu:24.04 AS spnet
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3-venv \
+ && rm -rf /var/lib/apt/lists/* \
+ && python3 -m venv /opt/spnet-venv \
+ && /opt/spnet-venv/bin/pip install --no-cache-dir torch==2.7.1 torchvision==0.22.1 \
+      --index-url https://download.pytorch.org/whl/cpu \
+ && /opt/spnet-venv/bin/pip install --no-cache-dir onnx gdown
+COPY gaussian_lic/ckpt /ckpt
+RUN [ -f /ckpt/spnet_480_640.onnx ] || SPNET_VENV=/opt/spnet-venv /ckpt/export_onnx.sh 480_640
 
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04
 
@@ -51,7 +62,7 @@ RUN python3 -m venv --system-site-packages /opt/viser-venv \
  && /opt/viser-venv/bin/pip install --no-cache-dir viser==1.1.1 "numpy<2"
 
 # SPNet depth completion model; its TensorRT engines are GPU specific and built on first start (entrypoint.sh)
-COPY gaussian_lic/ckpt/spnet_480_640.onnx /opt/spnet/spnet.onnx
+COPY --from=spnet /ckpt/spnet_480_640.onnx /opt/spnet/spnet.onnx
 COPY gaussian_lic/ckpt/build_trt.sh /opt/spnet/build_trt.sh
 
 ENV GAUSSIAN_LIC_WS=/opt/gaussian_lic_ws

@@ -7,12 +7,13 @@ dp_rate = 0.2
 norm_type = 'CNX'
 model_dir = 'Large_300.pth'
 
-net = V2Net(dims, depths, dp_rate, norm_type).cuda().eval()
-net.load_state_dict(torch.load(model_dir)['network'])
+device = 'cuda' if torch.cuda.is_available() else 'cpu'  # the exported model is the same
+net = V2Net(dims, depths, dp_rate, norm_type).to(device).eval()
+net.load_state_dict(torch.load(model_dir, map_location=device)['network'])
 
-rgb = torch.randn(1, 3, 512, 640).cuda()
-depth = torch.randn(1, 1, 512, 640).cuda()
-mask = torch.ones_like(depth).cuda()
+rgb = torch.randn(1, 3, 512, 640, device=device)
+depth = torch.randn(1, 1, 512, 640, device=device)
+mask = torch.ones_like(depth)
 mask[depth == 0] = 0
 
 torch.onnx.export(

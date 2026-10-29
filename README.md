@@ -18,42 +18,56 @@
 
 ## Quick Start: Docker + GUI
 
-For recordings from the Ouster + camera payload (ROS 2 bags). Needs Ubuntu with an NVIDIA RTX 50xx GPU (12 GB or more) and driver 570 or newer.
+Runs Gaussian-LIC on recordings from the Ouster + camera payload, in a GUI in your browser. Everything runs in a Docker container. The computer needs Ubuntu (tested on 24.04), an NVIDIA GPU with 12 GB or more (tested with an RTX 5090) and about 60 GB of free disk space.
 
-1. Install Docker and the NVIDIA Container Toolkit (once), then log out and back in:
+| Your situation | Steps |
+| --- | --- |
+| New computer | 1, 2, 3, 4 |
+| Computer already set up (step 1 done once), new clone | 2, 3, 4 |
+| Image already built on this computer | 4 (after `git pull` or editing a config: 3, then 4) |
+
+1. **Set up the computer** (once per computer).
+
+   - NVIDIA driver 570 or newer: `nvidia-smi` shows the version. If it is missing or older, run `sudo ubuntu-drivers install` and reboot.
+   - Docker and the NVIDIA Container Toolkit (running this again is fine, and Docker is skipped if you have it):
+
+     ```shell
+     docker --version || sudo apt install docker.io docker-buildx
+     sudo usermod -aG docker $USER
+     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+       sudo gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+     curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+       sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+       sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+     sudo apt update && sudo apt install nvidia-container-toolkit
+     sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+     ```
+
+   - Log out and back in, so that `docker` works without `sudo`.
+   - Check: `docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L` lists your GPU.
+
+2. **Get the code** (once per clone).
 
    ```shell
-   sudo apt install docker.io docker-buildx
-   sudo usermod -aG docker $USER
-   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-     sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-   curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-     sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-     sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-   sudo apt update && sudo apt install nvidia-container-toolkit
-   sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+   git clone https://github.com/PandaHood/Gaussian-LIC.git
+   cd Gaussian-LIC
    ```
 
-2. Get the depth completion model `gaussian_lic/ckpt/spnet_480_640.onnx`. It is not in git: copy it from a machine that has it, or download [Large_300.pth](https://drive.google.com/file/d/11dujPviL4pKLEXytXK0mEmPBNQDqgEak/view?pli=1) into `gaussian_lic/ckpt` and export it:
+3. **Build the image** (in the clone). About 20 minutes the first time, a few minutes when you rebuild after `git pull` or editing a config (the configs are part of the image). It builds for the GPU of this computer and downloads the depth completion model by itself.
 
    ```shell
-   sudo apt install python3-pip
-   cd gaussian_lic/ckpt && ./setup_spnet.sh && ./export_onnx.sh && cd ../..
+   docker/build.sh
    ```
 
-3. Build the image from the repository root (about 15 minutes, 39 GB). For an RTX 40xx or 30xx, add `--build-arg CUDA_ARCH=8.9` or `8.6`.
-
-   ```shell
-   docker build -t gaussian-lic -f docker/Dockerfile .
-   ```
-
-4. Start the GUI. It opens http://localhost:8080 in your browser. The first start takes a few extra minutes to build the TensorRT engines for your GPU.
+4. **Run the GUI** (in the clone, whenever you use it).
 
    ```shell
    docker/gui.sh
    ```
 
-5. Pick a recording (bags in your home folder, newest first; `docker/gui.sh bag_folder:=<folder>` for another folder) and click **Start**. The coloured point cloud builds up while it runs, and the Gaussian splats appear at the end. Results are saved in `~/gaussian_lic_result`. Press Ctrl-C in the terminal to quit.
+   It opens http://localhost:8080 in your browser; the first start on a computer takes a few extra minutes to build the TensorRT engines for its GPU. Pick a recording and click **Start**: the coloured point cloud builds up while it runs, and the Gaussian splats appear at the end. Results are saved in `~/gaussian_lic_result`. Press Ctrl-C in the terminal to quit.
+
+   The GUI lists the recordings in your home folder, newest first. For recordings elsewhere, e.g. on an external drive: `GAUSSIAN_LIC_DATA=/media/$USER/<drive> docker/gui.sh`.
 
 Gaussian-LIC2 is a photo-realistic LiDAR-Inertial-Camera Gaussian Splatting SLAM system, which simultaneously performs robust, accurate pose estimation and constructs a photo-realistic 3D Gaussian map in real time.
 
@@ -138,7 +152,7 @@ The ROS 2 version is tested with ROS 2 Jazzy on Ubuntu 24.04 with an NVIDIA RTX 
 
 7. TensorRT Deployment.
 
-   download and save [Large_300.pth](https://drive.google.com/file/d/11dujPviL4pKLEXytXK0mEmPBNQDqgEak/view?pli=1) to `~/ros2_gaussian/src/Gaussian-LIC/gaussian_lic/ckpt`. `setup_spnet.sh` creates a Python venv in `~/Software/spnet-venv` with PyTorch for CUDA 12.8; `build_trt.sh` builds FP32 engines (FP16 engines return wrong depths with TensorRT 10 on RTX 50xx).
+   `setup_spnet.sh` creates a Python venv in `~/Software/spnet-venv` with PyTorch for CUDA 12.8 (it needs `python3-pip`); `export_onnx.sh` downloads the SPNet checkpoint [Large_300.pth](https://drive.google.com/file/d/11dujPviL4pKLEXytXK0mEmPBNQDqgEak/view?pli=1) into `gaussian_lic/ckpt` if it is not there yet, and exports it; `build_trt.sh` builds FP32 engines (FP16 engines return wrong depths with TensorRT 10 on RTX 50xx).
 
    ```shell
    cd ~/ros2_gaussian/src/Gaussian-LIC/gaussian_lic/ckpt
@@ -171,10 +185,10 @@ The ROS 2 version is tested with ROS 2 Jazzy on Ubuntu 24.04 with an NVIDIA RTX 
 
 Instead of the steps above, everything can run in a container ([`docker/`](docker)): ROS 2 Jazzy with ouster-ros, CUDA 12.8, LibTorch 2.7.1, TensorRT 10.16, OpenCV 4.12 with CUDA and the splat viewer. The host only needs the NVIDIA driver, Docker and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html), see [Quick Start](#quick-start-docker--gui) for the install commands.
 
-Build the image from the repository root (about 39 GB). It needs the exported SPNet model `gaussian_lic/ckpt/spnet_480_640.onnx` (`setup_spnet.sh` and `export_onnx.sh` in step 7). For a GPU other than an RTX 50xx add `--build-arg CUDA_ARCH=<compute capability>`, e.g. `8.9` for an RTX 40xx.
+Build the image with `docker/build.sh` (about 39 GB). It compiles the CUDA code for the compute capability `nvidia-smi` reports (`CUDA_ARCH=8.9 docker/build.sh` for another GPU) and passes other arguments on to `docker build`. The SPNet model comes from `gaussian_lic/ckpt/spnet_480_640.onnx` if it is there; otherwise a build stage exports it on the CPU from `Large_300.pth`, downloading that first if needed, and only the ONNX file goes into the image.
 
 ```shell
-docker build -t gaussian-lic -f docker/Dockerfile .
+docker/build.sh
 ```
 
 `docker/run.sh` runs a command in the container, or a shell without one. The first start builds the TensorRT engines for the image sizes in the configs (a minute or two, kept in `~/.cache/gaussian_lic`). Your home folder is mounted at the same path, so bag paths are the same as outside the container. Results go to `~/gaussian_lic_result`: `gaussian_lic/` holds the renders, metrics and `point_cloud.ply` of the latest run, `cocolic/` the trajectory of every bag (TUM format). RViz2 opens on your display and the splat viewer is at http://localhost:8080 as usual:
