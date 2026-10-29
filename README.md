@@ -32,14 +32,15 @@ Runs Gaussian-LIC on recordings from the Ouster + camera payload, in a GUI in yo
    - Docker and the NVIDIA Container Toolkit (running this again is fine, and Docker is skipped if you have it):
 
      ```shell
-     docker --version || sudo apt install docker.io docker-buildx
+     sudo apt update && sudo apt install -y curl gpg
+     docker --version || sudo apt install -y docker.io docker-buildx
      sudo usermod -aG docker $USER
      curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
        sudo gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
      curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
        sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-     sudo apt update && sudo apt install nvidia-container-toolkit
+     sudo apt update && sudo apt install -y nvidia-container-toolkit
      sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
      ```
 
