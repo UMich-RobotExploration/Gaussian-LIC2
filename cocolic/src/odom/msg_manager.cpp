@@ -77,6 +77,16 @@ namespace cocolic
       YAML::Node cam_node = YAML::LoadFile(cam_yaml);
       image_topic_ = cam_node["image_topic"].as<std::string>();
       image_topic_compressed_ = std::string(image_topic_).append("/compressed");
+      if (cam_node["image_rotate"])  // [deg] counter-clockwise, turns an image sent turned back upright
+      {
+        int deg = (cam_node["image_rotate"].as<int>() % 360 + 360) % 360;
+        if (deg % 90 != 0)
+          throw std::runtime_error("image_rotate in camera.yaml has to be a multiple of 90");
+        image_rotate_ = deg == 90    ? cv::ROTATE_90_COUNTERCLOCKWISE
+                        : deg == 180 ? cv::ROTATE_180
+                        : deg == 270 ? cv::ROTATE_90_CLOCKWISE
+                                     : -1;
+      }
       if (cam_node["image_crop"])  // [x, y, width, height]
       {
         auto crop = cam_node["image_crop"].as<std::vector<int>>();
@@ -1026,6 +1036,15 @@ namespace cocolic
     return out;
   }
 
+  void MsgManager::RotateImage(cv::Mat &image) const
+  {
+    if (image_rotate_ < 0)
+      return;
+    cv::Mat rotated;
+    cv::rotate(image, rotated, image_rotate_);
+    image = rotated;
+  }
+
   void MsgManager::PreprocessImage(cv::Mat &image) const
   {
     image = CropAndResize(image, image_crop_, image_resize_);
@@ -1053,6 +1072,7 @@ namespace cocolic
     image_buf_.emplace_back();
     image_buf_.back().timestamp = stampToNSec(msg->header.stamp) + img_time_offset_ * S_TO_NS;
     image_buf_.back().image = cvImgPtr->image;
+    RotateImage(image_buf_.back().image);
     nerf_time_.push_back(image_buf_.back().timestamp);
 
     if (gs_image_enabled_)
@@ -1087,6 +1107,7 @@ namespace cocolic
     image_buf_.emplace_back();
     image_buf_.back().timestamp = stampToNSec(msg->header.stamp) + img_time_offset_ * S_TO_NS;
     image_buf_.back().image = cvImgPtr->image;
+    RotateImage(image_buf_.back().image);
     nerf_time_.push_back(image_buf_.back().timestamp);
 
     // std::cout << image_buf_.back().image.rows << " " << image_buf_.back().image.cols << std::endl;

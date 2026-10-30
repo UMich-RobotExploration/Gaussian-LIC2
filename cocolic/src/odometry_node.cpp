@@ -32,6 +32,10 @@ int main(int argc, char **argv) {
   RCLCPP_INFO(nh->get_logger(), "Odometry load %s.", config_path.c_str());
 
   YAML::Node config_node = YAML::LoadFile(config_path);
+  // another camera config for the same setup, e.g. the payload's camera preview (payload.launch.xml camera:=)
+  std::string camera_yaml = nh->declare_parameter<std::string>("camera_yaml", "");
+  if (!camera_yaml.empty())
+    config_node["camera_yaml"] = camera_yaml;
 
   // std::string log_path = config_node["log_path"].as<std::string>();
   // FLAGS_log_dir = log_path;

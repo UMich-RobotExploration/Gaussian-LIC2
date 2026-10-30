@@ -7,6 +7,7 @@
   <arg name="bag_path"          default="" />  
   <arg name="live"              default="false" description="read the live topics instead of a bag" />
   <arg name="live_timeout"      default="5.0"   description="live: finish once nothing arrived for this long [s], 0 to finish only on /cocolic/finish" />
+  <arg name="camera_yaml"       default=""      description="camera config in config/, instead of the camera_yaml of config_path" />
   <arg name="pasue_time"        default="-1.0" />
   <arg name="verbose"           default="false" />  
   <arg name="rviz"              default="true" />
@@ -17,6 +18,7 @@
     <param name="bag_path"        type="str"   value="$(var bag_path)" />
     <param name="live"            type="bool"  value="$(var live)" />
     <param name="live_timeout"    type="float" value="$(var live_timeout)" />
+    <param name="camera_yaml"     type="str"   value="$(var camera_yaml)" />
     <param name="pasue_time"      type="float" value="$(var pasue_time)" />
     <param name="verbose"         type="bool"  value="$(var verbose)" />
   </node>

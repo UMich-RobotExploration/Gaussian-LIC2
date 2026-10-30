@@ -311,6 +311,7 @@ namespace cocolic
     void ImageMsgHandle(const sensor_msgs::msg::CompressedImage::ConstSharedPtr &msg);
 
     // optional crop / resize from camera.yaml, else the 640 / 1280 wide images are resized to 640x512
+    void RotateImage(cv::Mat &image) const;
     void PreprocessImage(cv::Mat &image) const;
     static cv::Mat CropAndResize(const cv::Mat &image, const cv::Rect &crop, const cv::Size &size);
 
@@ -361,6 +362,7 @@ namespace cocolic
     std::vector<LiDARType> lidar_types;
     std::vector<std::string> lidar_topics_;
     std::string image_topic_, image_topic_compressed_;
+    int image_rotate_ = -1; // cv::RotateFlags, applied first; -1: none
     cv::Rect image_crop_;   // empty: no crop
     cv::Size image_resize_; // empty: no resize
     bool gs_image_enabled_ = false;  // camera.yaml has gs_cam_fx, ...

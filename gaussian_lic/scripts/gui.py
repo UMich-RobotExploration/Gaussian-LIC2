@@ -95,8 +95,8 @@ def missing_live_topics(node):
     def published(*topics):
         return all(node.count_publishers(topic) > 0 for topic in topics)
     missing = []
-    if not (published('/camera/left/image_raw') or published('/camera/left/image_raw/compressed')):
-        missing.append('the camera (`/camera/left/image_raw`)')
+    if not published('/camera/left/preview'):  # what payload.launch.xml reads live, not image_raw
+        missing.append('the camera preview (`/camera/left/preview`)')
     points = published('/ouster/points')
     packets = not points and published('/ouster/lidar_packets', '/ouster/metadata')
     if not (points or packets):

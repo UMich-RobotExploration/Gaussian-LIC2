@@ -1,0 +1,36 @@
+# Left camera preview instead of the raw image (payload.launch.xml camera:=preview, the default live): JPEG, the
+# 2880x1860 image at half size turned 90 deg clockwise (930x1440), every second frame (5 Hz) with the same stamps.
+# Turned back upright it is camera.yaml at half size: the same 640x480 crop (so the same intrinsics) and extrinsics.
+image_topic: /camera/left/preview  # sensor_msgs/CompressedImage
+image_rotate: 90  # [deg] counter-clockwise, applied first: 1440x930
+image_crop: [100, 0, 1240, 930]  # [x, y, width, height] kept from the turned image, applied before image_resize
+image_resize: [640, 480]  # [width, height]
+
+image_width: 640
+image_height: 480
+cam_fx: 685.654374
+cam_fy: 685.017058
+cam_cx: 318.970271
+cam_cy: 238.611535
+cam_d0: -0.011498
+cam_d1: 0.055025
+cam_d2: 0.0
+cam_d3: 0.0
+cam_d4: -0.016232
+
+CameraExtrinsics:  # camera to imu (camera_left_optical_frame -> os_imu; camera calibrated w.r.t. os_sensor)
+    Trans: [-0.116119, 0.171435, -0.002803]
+    Rot: [-0.025859, -0.999288, -0.027461,
+           0.680561, -0.037719,  0.731720,
+          -0.732235,  0.000233,  0.681052]
+
+# the image sent to Gaussian-LIC: the turned image with a row cut at the top and bottom (sizes have to be multiples
+# of 32); intrinsics of that 1440x928 image (camera.yaml's at half size), same distortion as above
+gs_image_crop: [0, 1, 1440, 928]  # [x, y, width, height] kept from the turned image
+gs_cam_fx: 1328.4553
+gs_cam_fy: 1327.2206
+gs_cam_cx: 718.4737
+gs_cam_cy: 461.7786
+
+img_time_offset: 0.0  # camera to imu [s], all sensors are stamped on the same clock
+odometry_mode: 1  # LIO = 0, LICO = 1 (Gaussian-LIC needs LICO)

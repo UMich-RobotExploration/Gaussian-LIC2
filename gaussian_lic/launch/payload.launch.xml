@@ -1,11 +1,13 @@
 <?xml version="1.0"?>
 <!-- Gaussian-LIC + Coco-LIC on a payload recording, e.g. bag_path:=$HOME/payload_20261027_132644, or on the live
      topics without bag_path. Live, Ctrl-C finishes and saves the map, as does
-     ros2 service call /cocolic/finish std_srvs/srv/Trigger; on a recording Ctrl-C stops without saving. -->
+     ros2 service call /cocolic/finish std_srvs/srv/Trigger; on a recording Ctrl-C stops without saving.
+     The camera is read from /camera/left/preview live, from /camera/left/image_raw on a recording (camera:=). -->
 <launch>
   <arg name="bag_path"          default="" description="ROS 2 bag (folder or .mcap) with /camera/left/image_raw and the raw Ouster packets or /ouster/points + /ouster/imu; leave it out to read these topics live" />
   <arg name="live_timeout"      default="5.0"  description="live: finish once nothing arrived for this long [s], 0 to finish only on /cocolic/finish" />
-  <arg name="config_path"       default="config/payload.yaml" />
+  <arg name="camera"            default="auto" description="preview: /camera/left/preview (JPEG, half size, 5 Hz), raw: /camera/left/image_raw (2880x1860, 10 Hz), auto: preview live, raw from a recording" />
+  <arg name="config_path"       default="" description="Gaussian-LIC config, default config/payload.yaml (raw) or config/payload_preview.yaml (preview)" />
   <arg name="result_path"       default="$(find-pkg-share gaussian_lic)/result" description="renders, metrics and point_cloud.ply; replaced on every run" />
   <arg name="rviz"              default="true" />
   <arg name="viewer"            default="true"  description="3D Gaussian splat viewer in the browser (viser)" />
@@ -14,6 +16,8 @@
 
   <!-- no bag_path; the x because '' parses as the text [] -->
   <let name="live" value="$(equals '$(var bag_path)x' 'x')" />
+  <let name="preview" value="$(if $(var live) $(not-equals '$(var camera)' 'raw') $(equals '$(var camera)' 'preview'))" />
+  <let name="gs_config" value="$(if $(equals '$(var config_path)x' 'x') $(if $(var preview) config/payload_preview.yaml config/payload.yaml) $(var config_path))" />
 
   <!-- live, Ctrl-C ends the run: Gaussian-LIC gets time to evaluate and save its map before launch escalates
        (the default of every process, the others are done right away) -->
@@ -22,7 +26,7 @@
   <node pkg="gaussian_lic" exec="gs_mapping" name="$(anon gs_mapping)" output="screen" emulate_tty="true">
     <!-- grow CUDA memory blocks in place instead of caching fragments: ~9 GB instead of ~27 GB at 2880x1856 -->
     <env name="PYTORCH_CUDA_ALLOC_CONF" value="expandable_segments:True" />
-    <param name="config_path"     value="$(find-pkg-share gaussian_lic)/$(var config_path)" />
+    <param name="config_path"     value="$(find-pkg-share gaussian_lic)/$(var gs_config)" />
     <param name="result_path"     value="$(var result_path)" />
     <param name="lpips_path"      value="$(find-pkg-share gaussian_lic)/lpips" />
   </node>
@@ -39,6 +43,7 @@
   <timer period="3.0">
     <include file="$(find-pkg-share cocolic)/launch/odometry.launch.xml">
       <arg name="config_path"     value="config/ct_odometry_payload.yaml" />
+      <arg name="camera_yaml"     value="$(if $(var preview) /payload/camera_preview.yaml /payload/camera.yaml)" />
       <arg name="bag_path"        value="$(var bag_path)" />
       <arg name="live"            value="$(var live)" />
       <arg name="live_timeout"    value="$(var live_timeout)" />
