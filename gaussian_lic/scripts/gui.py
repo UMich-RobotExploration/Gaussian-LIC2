@@ -36,8 +36,8 @@ INSTRUCTIONS = '''
    adding some), or the **live topics** of the payload as they are published.
 2. Click **Start**.
 3. The coloured point cloud of the map builds up while the data is processed. A recording ends by itself; click
-   **Finish** to end a live run, or to stop a recording early. Gaussian-LIC then saves its map, which takes a minute
-   or two, and the Gaussian splats appear. **Stop** ends a run without saving.
+   **Stop and save** to end a live run, or to stop a recording early. Gaussian-LIC then saves its map, which takes a
+   minute or two, and the Gaussian splats appear. **Cancel** ends a run without saving.
 
 Drag to rotate, right-drag to move, scroll to zoom.
 '''
@@ -126,6 +126,18 @@ def terminate(proc, timeout):
         pass
 
 
+def kill_mapping(pgid):
+    """Kills Gaussian-LIC in the process group of a run: after Ctrl-C it would still empty the result folder and save
+    its map, which a live run has time to do (payload.launch.xml)"""
+    for pid in filter(str.isdigit, os.listdir('/proc')):
+        try:
+            with open(f'/proc/{pid}/comm') as f:
+                if f.read().strip() == 'gs_mapping' and os.getpgid(int(pid)) == pgid:
+                    os.kill(int(pid), signal.SIGKILL)
+        except OSError:  # gone in the meantime
+            pass
+
+
 def host_path(path):
     """path as seen outside the container: docker/run.sh mounts the result folder at /results"""
     path, host = os.path.realpath(path), os.environ.get('GAUSSIAN_LIC_HOST_RESULT')
@@ -161,9 +173,9 @@ class Gui(Node):
         self.refresh_button = gui.add_button('Refresh', icon=viser.Icon.REFRESH)
         self.recording = gui.add_dropdown('Recording', ('none found',), disabled=True)
         self.start_button = gui.add_button('Start', color='green', icon=viser.Icon.PLAYER_PLAY)
-        self.finish_button = gui.add_button('Finish', color='green', icon=viser.Icon.PLAYER_TRACK_NEXT, visible=False,
-                                            hint='stop reading and save the map so far')
-        self.stop_button = gui.add_button('Stop', color='red', icon=viser.Icon.PLAYER_STOP, visible=False,
+        self.finish_button = gui.add_button('Stop and save', color='green', icon=viser.Icon.DEVICE_FLOPPY,
+                                            visible=False, hint='stop reading and save the map so far')
+        self.stop_button = gui.add_button('Cancel', color='red', icon=viser.Icon.X, visible=False,
                                           hint='end the run without saving a map')
         self.status = gui.add_markdown('')
         self.progress = gui.add_progress_bar(0, visible=False)
@@ -247,9 +259,9 @@ class Gui(Node):
                 return
             self.stopping, self.stop_reason, proc = True, reason, self.proc
         self.stop_button.disabled = self.finish_button.disabled = True
-        if proc is not None:  # a live run would save its map on Ctrl-C (payload.launch.xml), Stop does not wait for it
-            threading.Thread(target=terminate, args=(proc, 15 if isinstance(self.run_bag, LiveTopics) else 40),
-                             daemon=True).start()
+        if proc is not None:
+            kill_mapping(proc.pid)  # its process group
+            threading.Thread(target=terminate, args=(proc, 40), daemon=True).start()
 
     def run(self, bag):
         try:
